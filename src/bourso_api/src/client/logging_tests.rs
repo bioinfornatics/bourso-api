@@ -150,3 +150,101 @@ fn logging_password_and_svg_errors_do_not_echo_input() {
         assert_clean(Some(&result.unwrap_err()), &logs, &["SENTINEL_SVG"]);
     }
 }
+
+#[test]
+fn capture_parallel_on_off_shared_callsites() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Barrier,
+    };
+
+    const ROUNDS: usize = 32;
+    // Both threads use these exact callsites, including their first registration.
+    // Count attempted emissions independently of tracing's filtering/capture path.
+    fn emit(attempts: &AtomicUsize, worker: usize, round: usize, phase: usize) {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        tracing::info!("capture-sync-info worker={worker} round={round} phase={phase}");
+        tracing::trace!("capture-sync-trace worker={worker} round={round} phase={phase}");
+    }
+
+    let barrier = Barrier::new(2);
+    let attempts = AtomicUsize::new(0);
+    let results = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..2)
+            .map(|worker| {
+                let barrier = &barrier;
+                let attempts = &attempts;
+                scope.spawn(move || {
+                    let mut results = Vec::new();
+                    for round in 0..ROUNDS {
+                        let enabled = (worker + round) % 2 == 0;
+                        barrier.wait(); // Race dispatcher registration, not whole test runs.
+                                        // Defer helper assertion failures until both workers finish all
+                                        // rendezvous; an observed miss must not strand the other thread.
+                        let result = std::panic::catch_unwind(|| {
+                            capture(enabled, || {
+                                barrier.wait(); // Both ON and OFF dispatchers are alive.
+                                emit(attempts, worker, round, 0);
+                                barrier.wait();
+                                // Race an ON emission against OFF registration/rebuild,
+                                // then check the restored outer dispatchers at phase 2.
+                                let nested = if enabled {
+                                    emit(attempts, worker, round, 1);
+                                    None
+                                } else {
+                                    Some(std::panic::catch_unwind(|| {
+                                        capture(false, || emit(attempts, worker, round, 1))
+                                    }))
+                                };
+                                barrier.wait();
+                                emit(attempts, worker, round, 2);
+                                barrier.wait(); // Keep both outer dispatchers alive through emission.
+                                nested
+                            })
+                        });
+                        results.push((worker, round, enabled, result));
+                    }
+                    results
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2 * ROUNDS * 3);
+    for (worker, round, enabled, result) in results {
+        let (nested, logs) = result.unwrap_or_else(|_| {
+            panic!("capture helper failed: worker={worker} round={round} enabled={enabled}")
+        });
+        if let Some(nested) = nested {
+            assert!(nested.unwrap().1.is_empty(), "nested OFF capture leaked");
+        }
+        if enabled {
+            let expected: Vec<_> = (0..3)
+                .flat_map(|phase| {
+                    ["info", "trace"].map(move |level| {
+                        format!(
+                            "message=capture-sync-{level} worker={worker} round={round} phase={phase}"
+                        )
+                    })
+                })
+                .collect();
+            let observed: Vec<_> = logs
+                .lines()
+                .filter(|line| line.starts_with("message=capture-sync-"))
+                .collect();
+            assert_eq!(
+                observed, expected,
+                "ON capture: worker={worker} round={round}"
+            );
+        } else {
+            assert!(
+                logs.is_empty(),
+                "OFF capture leaked: worker={worker} round={round}"
+            );
+        }
+    }
+}
