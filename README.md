@@ -179,6 +179,12 @@ Inspect syntax safely:
 ```
 
 Order creation takes `--side buy|sell`, `--symbol`, `--account` and `--quantity`.
+Results are explicit on stderr, even with logs off: exit `2` means this command
+did not invoke its financial API; `3` means response received but unverified; `4`
+means outcome unknown (possibly not emitted). Every invoked attempt retains a
+private replay barrier until explicit operator review. See [the CLI guard and
+review procedure](docs/FINANCIAL_GUARD.md); the APIs themselves remain unguarded.
+
 Quantity must be nonzero; the CLI uses bank-prefilled order options and exposes
 no price-limit/expiration switches. Cancellation is not exposed by the CLI.
 
@@ -198,8 +204,8 @@ password input, a usable terminal and/or MFA device approval may be needed.
 Credentials in a file do not make it safely unattended.
 
 **DO NOT use `bourso-launchd.sh`, launchd, cron or Windows scheduled tasks for DCA
-automation pending `bourso-y3u.27`, `bourso-y3u.8` and the financial contracts in
-`bourso-y3u.4`.** The launcher now uses private attempt journaling, a concurrency lock and foreground child observation, but exit zero is recorded as **submitted-unverified**, not financial success. Unknown attempts block repeats until explicit operator reconciliation. See [the assisted DCA procedure](docs/DCA.md). Trusted automatic success remains unavailable.
+automation while provider contracts and trusted automatic success remain
+unverified (`bourso-y3u.4`, `.6`, `.7`, `.8`).** The launcher now uses private attempt journaling, a concurrency lock and synchronous child observation, but exit zero is recorded as **submitted-unverified**, not financial success. Unknown attempts block repeats until explicit operator reconciliation. See [the assisted DCA procedure](docs/DCA.md). Trusted automatic success remains unavailable.
 
 A launchd `RunAtLoad` trigger can add an immediate attempt to a calendar schedule,
 creating duplicate-attempt risk. No runnable scheduler installation recipe is
@@ -216,7 +222,9 @@ use `www.boursorama.com`; authenticated flows use bank URLs/configuration.
 
 ### Local files and retention
 
-The CLI manages `~/.bourso/settings.json`, `bourso.log`, `bourso.log.1`, and `bourso.log.lock`. On Unix, its directory is private (0700) and managed files are 0600, independently of umask. Existing managed regular files have their permissions tightened; symbolic links, special files and multiple hard links are refused. External credentials are read without changing their permissions: secure those files yourself.
+The CLI manages `~/.bourso/settings.json`, `bourso.log`, `bourso.log.1`, and `bourso.log.lock`, and the CLI replay-barrier files described above. Financial
+commands do not initialize diagnostic logging; this does not remove interactive
+password/MFA requirements. On Unix, its directory is private (0700) and managed files are 0600, independently of umask. Existing managed regular files have their permissions tightened; symbolic links, special files and multiple hard links are refused. External credentials are read without changing their permissions: secure those files yourself.
 
 The journal is limited to 10 MiB with one archive of at most 10 MiB (20 MiB total). Rotation does not purge configuration or unrelated files. An existing oversized journal is refused, not truncated: stop the CLI, move the journal/archive to a secure location and retry. A second active logger using the same directory is refused by an exclusive lock. A lock file left on disk is normal; its presence alone does not mean a process owns the lock.
 

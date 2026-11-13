@@ -14,7 +14,10 @@ only their exercised scenarios, not live bank compatibility or absence of loss.
   exact-money guarantee. Local date validation establishes a `YYYY-MM-DD`
   calendar date, not market timezone/current-date/maximum-validity policy.
 - **Transfers:** final HTTP 200 now produces `SubmittedUnverified`; the word `Confirmation` no longer establishes success. The existing submission stages remain available. Intermediate transition meanings, trusted receipt and positive provider execution semantics still need evidence.
-- **Unknown outcomes:** public typed `OutcomeUnknown` covers final submission send/read/status failures and order parse failures, with redacted diagnostics and a sensitive correlation-reference accessor. This is not durable journaling or a complete reconciliation API. Dropping pending work and direct re-invocation remain outside the guard. Do not replay before independently checking the bank.
+- **Unknown outcomes:** public typed `OutcomeUnknown` covers final submission send/read/status failures and order parse failures, with redacted diagnostics and a sensitive correlation-reference accessor. This is not durable journaling or a complete reconciliation API. Direct library re-invocation and dropped library futures remain outside the guard.
+  The CLI now has a conservative private replay barrier before financial API
+  invocation, with explicit results and operator review; it deliberately retains
+  possibly-not-emitted attempts. See [FINANCIAL_GUARD.md](FINANCIAL_GUARD.md). Do not replay before independently checking the bank.
 - **Cancellation:** a library method exists but its provider contract is not
   established, and the CLI does not expose a cancellation command.
 
@@ -32,12 +35,13 @@ launchd `RunAtLoad` can trigger an additional immediate attempt besides the
 calendar schedule. Windows/cron scheduling does not remove password, TTY or MFA
 requirements. The workflow is **semi-interactive**, not safely unattended.
 
-**Do not use DCA automation pending `bourso-y3u.27`, `bourso-y3u.8` and
-`bourso-y3u.4`.** No scheduler installation recipe is endorsed. Removing unsafe
+**Do not use unattended DCA automation while trusted bank outcomes and contracts
+remain unverified (`bourso-y3u.4`, `.6`, `.7`, `.8`).** No scheduler installation recipe is endorsed. Removing unsafe
 Windows/macOS examples from the README does not establish trusted financial confirmation or satisfy
-its success/locking/recovery criteria. The `.31` documentation delivery is
-partial while its `.27` dependency remains unresolved; it must not be treated as
-full task closure or an automation-readiness gate.
+its success/locking/recovery criteria. Local documentation and fake-executor safety can be verified independently;
+neither establishes automation readiness. DCA cancellation forwards TERM to the
+direct child and retains its lock conservatively; a live child may remain. The
+CLI and DCA have separate journals requiring separate operator review.
 
 ## CLI and data contracts
 
@@ -57,7 +61,7 @@ full task closure or an automation-readiness gate.
   expose `f64` compatibility fields after checked bank-cent parsing.
 - Transfer reasons retain the existing **50 UTF-8 byte local policy; provider
   contract unverified**. The API documentation/error now labels that policy;
-  the CLI help still says characters (outside this local API slice). Source
+  the CLI help labels the same byte policy and unverified contract. Source
   inspection established `String::len()` versus the old “50 characters” text;
   local runtime tests independently establish the unchanged accepted units:
   50 ASCII bytes pass, 51 fail; 25 `é` (50 bytes) pass, 26 fail; 12 `😀`
