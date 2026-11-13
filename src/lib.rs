@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use bourso_api::{
     account::{Account, AccountKind, Transaction},
     client::{
-        trade::{order::OrderSide, tick::QuoteTab},
+        trade::{order::OrderSide, tick::GetTicksEOD},
         transfer::TransferProgress,
         BoursoWebClient,
     },
@@ -12,6 +12,9 @@ use clap::ArgMatches;
 use futures_util::{pin_mut, StreamExt};
 use tracing::{debug, info, warn};
 
+pub mod account_filters;
+mod mfa;
+pub mod money;
 pub mod qrcode;
 pub mod settings;
 pub mod validate;
@@ -20,10 +23,44 @@ use settings::{get_settings, save_settings, Settings};
 
 #[cfg(not(tarpaulin_include))]
 pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
-    let settings = match matches.get_one::<String>("credentials") {
-        Some(credentials_path) => Settings::load(credentials_path)?,
-        None => get_settings()?,
-    };
+    parse_matches_with_dependencies(
+        matches,
+        |matches| match matches.get_one::<String>("credentials") {
+            Some(path) => Settings::load(path),
+            None => get_settings(),
+        },
+        |symbol, length, interval| async move {
+            get_client().get_ticks(&symbol, length, interval).await
+        },
+        || Ok(get_client()),
+    )
+    .await
+}
+
+// Private injection seam: tests cannot redirect the production client's endpoints.
+#[cfg(not(tarpaulin_include))]
+async fn parse_matches_with_dependencies<L, F, Fut, B>(
+    matches: ArgMatches,
+    load_settings: L,
+    fetch_quotes: F,
+    bank_client: B,
+) -> Result<()>
+where
+    L: FnOnce(&ArgMatches) -> Result<Settings>,
+    F: FnOnce(String, i64, i64) -> Fut,
+    Fut: std::future::Future<Output = Result<GetTicksEOD>>,
+    B: FnOnce() -> Result<BoursoWebClient>,
+{
+    // Validate even caller-built ArgMatches before settings, credentials or network.
+    let transfer_amount = matches
+        .subcommand_matches("transfer")
+        .map(|transfer| -> Result<money::Money> {
+            Ok(transfer
+                .get_one::<String>("amount")
+                .context("Missing transfer amount")?
+                .parse()?)
+        })
+        .transpose()?;
 
     info!("Welcome to BoursoBank CLI 👋");
     info!(
@@ -31,7 +68,7 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_REPOSITORY")
     );
-    println!("");
+    println!();
 
     match matches.subcommand() {
         // These matches do not require authentication
@@ -62,19 +99,16 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                 .get_one::<String>("interval")
                 .map(|s| s.as_str())
                 .unwrap();
-            let web_client: BoursoWebClient = get_client();
-
-            let quotes = web_client
-                .get_ticks(symbol, length.parse()?, interval.parse()?)
-                .await?;
+            let quotes =
+                fetch_quotes(symbol.to_owned(), length.parse()?, interval.parse()?).await?;
 
             match quote_matches.subcommand() {
                 Some(("highest", _)) => {
-                    let highest_quote = quotes.d.get_highest_value();
+                    let highest_quote = quotes.d.get_highest_value()?;
                     info!(highest_quote, "Highest quote: {:#?}", highest_quote);
                 }
                 Some(("lowest", _)) => {
-                    let lowest_quote = quotes.d.get_lowest_value();
+                    let lowest_quote = quotes.d.get_lowest_value()?;
                     info!(lowest_quote, "Lowest quote: {:#?}", lowest_quote);
                 }
                 Some(("volume", _)) => {
@@ -82,18 +116,14 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                     info!(volume, "Volume: {:#?}", volume);
                 }
                 Some(("average", _)) => {
-                    let average_quote = quotes.d.get_average_value();
+                    let average_quote = quotes.d.get_average_value()?;
                     info!(average_quote, "Average quote: {:#?}", average_quote);
                 }
                 Some(("last", _)) => {
-                    let quote: QuoteTab;
-
-                    let last_quote = quotes.d.get_last_quote();
-                    if last_quote.is_some() {
-                        quote = last_quote.unwrap();
-                    } else {
-                        quote = quotes.d.quote_tab.last().unwrap().clone();
-                    }
+                    let quote = quotes
+                        .d
+                        .get_latest_quote()
+                        .context("No quotation available for this symbol and period")?;
 
                     info!(
                         close = quote.close, open = quote.open, high = quote.high, low = quote.low, volume = quote.volume,
@@ -124,18 +154,15 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
         _ => unreachable!(),
     }
 
-    if settings.customer_id.is_none() {
-        warn!("Please configure your customer id with `bourso config --username <customer_id>`");
-        return Ok(());
-    }
-    let customer_id = settings.customer_id.unwrap();
+    // Only authenticated commands load credentials or prompt for a password.
+    let settings = load_settings(&matches)?;
+    let customer_id = settings.customer_id.context(
+        "Missing customer id. Please configure it with `bourso config --username <customer_id>`",
+    )?;
 
-    info!(
-        "We'll try to log you in with your customer id: {}",
-        customer_id
-    );
+    info!("Authenticating with the configured customer id");
     info!("If you want to change it, run `bourso config --username <customer_id>`");
-    println!("");
+    println!();
     info!("We'll need your password to log you in. It will not be stored anywhere and will be asked everytime you run a command. The password will be hidden while typing.");
 
     // Get password from stdin
@@ -147,7 +174,7 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
             .to_string(),
     };
 
-    let mut web_client: BoursoWebClient = get_client();
+    let mut web_client = bank_client()?;
     web_client.init_session().await?;
     match web_client.login(&customer_id, &password).await {
         Ok(_) => {
@@ -157,75 +184,21 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
             Some(bourso_api::client::error::ClientError::MfaRequired) => {
                 warn!("An MFA is required.");
 
-                let (otp_id, form_state, token, mfa_type) = match web_client.request_mfa().await {
-                    Ok(mfa_info) => mfa_info,
-                    Err(e) => {
-                        debug!("{:#?}", e);
-                        return Err(e);
-                    }
-                };
-                info!("To validate your identity, please open the BoursoBank app and validate the login request.");
-
-                // Loop until MFA is ready, timeout after 5 minutes
-                let mut wait_time = 0;
-                let wait_interval = 5;
-                let max_wait_time = 300;
-                loop {
-                    info!(
-                        "Checking MFA status... (waited {}s/{})",
-                        wait_time, max_wait_time
-                    );
-                    match web_client
-                        .check_mfa(
-                            mfa_type.clone(),
-                            otp_id.clone(),
-                            form_state.clone(),
-                            token.clone(),
-                        )
-                        .await
-                    {
-                        Ok(mfa_validated) => {
-                            if mfa_validated {
-                                break;
-                            }
-
-                            if wait_time >= max_wait_time {
-                                return Err(anyhow::anyhow!(
-                                    "MFA validation timed out after {} seconds",
-                                    max_wait_time
-                                ));
-                            }
-
-                            wait_time += wait_interval;
-                            tokio::time::sleep(std::time::Duration::from_secs(wait_interval)).await;
-                        }
-                        Err(e) => match e.downcast_ref() {
-                            Some(bourso_api::client::error::ClientError::QRCodeRequired(code)) => {
-                                match qrcode::generate_qr_code(code) {
-                                    Ok(qr) => {
-                                        println!();
-                                        println!("{}", qrcode::render_to_terminal(&qr));
-                                        println!();
-                                    }
-                                    Err(e) => {
-                                        debug!("{:#?}", e);
-                                        return Err(e);
-                                    }
-                                }
-                                info!(
-                                    "Please scan the latest QR code in your BoursoBank app to validate the login request."
-                                );
-                                wait_time += wait_interval;
-                                tokio::time::sleep(std::time::Duration::from_secs(wait_interval))
-                                    .await;
-                            }
-                            _ => {
-                                debug!("{:#?}", e);
-                                return Err(e);
-                            }
-                        },
-                    }
-                }
+                mfa::within_deadline(mfa::VALIDATION_TIMEOUT, async {
+                    let (otp_id, form_state, token, mfa_type) = web_client.request_mfa().await?;
+                    info!("To validate your identity, please open the BoursoBank app and validate the login request.");
+                    mfa::wait_until(mfa::POLL_INTERVAL, async || {
+                        let response = web_client.check_mfa(
+                            mfa_type.clone(), otp_id.clone(), form_state.clone(), token.clone(),
+                        ).await;
+                        mfa::validation_status(response, |code| {
+                            let qr = qrcode::generate_qr_code(code)?;
+                            println!("\n{}\n", qrcode::render_to_terminal(&qr));
+                            info!("Please scan the latest QR code in your BoursoBank app.");
+                            Ok(())
+                        })
+                    }).await
+                }).await?;
 
                 info!("MFA successful ✅");
             }
@@ -240,95 +213,69 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
 
     match matches.subcommand() {
         Some(("accounts", sub_matches)) => {
-            if sub_matches.contains_id("bank") {
-                accounts = web_client.get_accounts(Some(AccountKind::Banking)).await?;
-            } else if sub_matches.contains_id("saving") {
-                accounts = web_client.get_accounts(Some(AccountKind::Savings)).await?;
-            } else if sub_matches.contains_id("trading") {
-                accounts = web_client.get_accounts(Some(AccountKind::Trading)).await?;
-            } else if sub_matches.contains_id("loans") {
-                accounts = web_client.get_accounts(Some(AccountKind::Loans)).await?;
-            } else {
-                accounts = web_client.get_accounts(None).await?;
-            }
+            let category = account_filters::selected(sub_matches).map(|filter| match filter {
+                account_filters::AccountFilter::Banking => AccountKind::Banking,
+                account_filters::AccountFilter::Savings => AccountKind::Savings,
+                account_filters::AccountFilter::Trading => AccountKind::Trading,
+                account_filters::AccountFilter::Loans => AccountKind::Loans,
+            });
+            accounts = web_client.get_accounts(category).await?;
 
             info!("Found {} accounts", accounts.len());
             println!("{:#?}", accounts);
         }
 
-        Some(("export", export_matches)) => {
-            match export_matches.subcommand() {
-                Some(("transactions", tx_matches)) => {
-                    let account_id = tx_matches
-                        .get_one::<String>("account")
-                        .map(|s| s.as_str())
-                        .unwrap();
-                    let start_date = tx_matches
-                        .get_one::<String>("start-date")
-                        .map(|s| s.as_str())
-                        .unwrap();
-                    let end_date = tx_matches
-                        .get_one::<String>("end-date")
-                        .map(|s| s.as_str())
-                        .unwrap();
-                    let format = tx_matches
-                        .get_one::<String>("format")
-                        .map(|s| s.as_str())
-                        .unwrap();
-                    let output_path = tx_matches
-                        .get_one::<String>("output")
-                        .map(|s| s.as_str());
+        Some(("export", export_matches)) => match export_matches.subcommand() {
+            Some(("transactions", tx_matches)) => {
+                let account_id = tx_matches
+                    .get_one::<String>("account")
+                    .map(|s| s.as_str())
+                    .unwrap();
+                let start_date = tx_matches
+                    .get_one::<String>("start-date")
+                    .map(|s| s.as_str())
+                    .unwrap();
+                let end_date = tx_matches
+                    .get_one::<String>("end-date")
+                    .map(|s| s.as_str())
+                    .unwrap();
+                let format = tx_matches
+                    .get_one::<String>("format")
+                    .map(|s| s.as_str())
+                    .unwrap();
+                let output_path = tx_matches.get_one::<String>("output").map(|s| s.as_str());
 
-                    info!(
-                        "Fetching transactions for account {} from {} to {}...",
-                        account_id, start_date, end_date
-                    );
+                info!(
+                    "Fetching transactions from {} to {}...",
+                    start_date, end_date
+                );
 
-                    let transactions: Vec<Transaction> = web_client
-                        .get_transactions(account_id, start_date, end_date)
-                        .await?;
+                let transactions: Vec<Transaction> = web_client
+                    .get_transactions(account_id, start_date, end_date)
+                    .await?;
 
-                    info!("Found {} transactions", transactions.len());
+                info!("Found {} transactions", transactions.len());
 
-                    let content = match format {
-                        "json" => serde_json::to_string_pretty(&transactions)?,
-                        _ => {
-                            let mut lines = vec![
-                                "dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance".to_string()
-                            ];
-                            for tx in &transactions {
-                                lines.push(format!(
-                                    "{};{};{};{};{};{};{};{};{};{};{}",
-                                    tx.date_op,
-                                    tx.date_val,
-                                    tx.label,
-                                    tx.category,
-                                    tx.category_parent,
-                                    tx.supplier_found,
-                                    format!("{:.2}", tx.amount),
-                                    tx.comment,
-                                    tx.account_num,
-                                    tx.account_label,
-                                    format!("{:.2}", tx.account_balance),
-                                ));
-                            }
-                            lines.join("\n")
-                        }
-                    };
+                let content = match format {
+                    "json" => serde_json::to_string_pretty(&transactions)?,
+                    _ => bourso_api::client::transaction::transactions_to_csv(&transactions)?,
+                };
 
-                    match output_path {
-                        Some(path) => {
-                            std::fs::write(path, &content)?;
-                            info!("Transactions exported to {}", path);
-                        }
-                        None => {
-                            println!("{}", content);
-                        }
+                match output_path {
+                    Some(path) => {
+                        bourso_api::client::transaction::write_export_atomically(
+                            std::path::Path::new(path),
+                            content.as_bytes(),
+                        )?;
+                        info!("Transactions exported to {}", path);
+                    }
+                    None => {
+                        println!("{}", content);
                     }
                 }
-                _ => unreachable!(),
             }
-        }
+            _ => unreachable!(),
+        },
 
         Some(("trade", trade_matches)) => {
             accounts = web_client.get_accounts(Some(AccountKind::Trading)).await?;
@@ -377,10 +324,7 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                 .get_one::<String>("to_account")
                 .map(|s| s.as_str())
                 .unwrap();
-            let amount = transfer_matches
-                .get_one::<String>("amount")
-                .map(|s| s.parse::<f64>().unwrap())
-                .unwrap();
+            let amount = transfer_amount.context("Missing validated transfer amount")?;
             let reason = transfer_matches
                 .get_one::<String>("reason")
                 .map(|s| s.as_str());
@@ -397,7 +341,7 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
                 .find(|a| a.id == to_account_id)
                 .context("To account not found. Are you sure you have access to it? Run `bourso accounts` to list your accounts")?;
 
-            let stream = web_client.transfer_funds(
+            let stream = web_client.transfer_money(
                 amount,
                 from_account.clone(),
                 to_account.clone(),
@@ -406,9 +350,11 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
 
             pin_mut!(stream);
 
-            // Track progress and update display
+            // 100% means the local submission process ended, not bank execution.
+            let mut submission_warning = None;
             while let Some(progress_result) = stream.next().await {
                 let progress = progress_result?;
+                submission_warning = progress.submission_warning();
                 let step = progress.step_number();
                 let total = TransferProgress::total_steps();
                 let percentage = (step as f32 / total as f32 * 100.0) as u8;
@@ -433,9 +379,11 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
             }
             println!(); // New line after progress is complete
 
-            info!(
-                "Transfer of {} from account {} to account {} successful ✅",
-                amount, from_account.id, to_account.id
+            warn!(
+                "{}",
+                submission_warning.unwrap_or(
+                    "Transfer execution unverified: no final submission status received. Verify in the bank before retrying; do not resubmit automatically."
+                )
             );
         }
 
@@ -443,4 +391,156 @@ pub async fn parse_matches(matches: ArgMatches) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(all(test, not(tarpaulin_include)))]
+mod dispatch_tests {
+    use super::*;
+    use bourso_api::client::trade::tick::{QuoteTab, D};
+    use clap::{Arg, Command};
+    use std::cell::Cell;
+
+    fn quote_matches(operation: &str) -> ArgMatches {
+        Command::new("bourso")
+            .arg(Arg::new("credentials").long("credentials"))
+            .subcommand(Command::new("transfer"))
+            .subcommand(
+                Command::new("quote")
+                    .arg(Arg::new("symbol").long("symbol"))
+                    .arg(Arg::new("length").default_value("30"))
+                    .arg(Arg::new("interval").default_value("0"))
+                    .subcommands(
+                        ["last", "highest", "lowest", "average", "volume"].map(Command::new),
+                    ),
+            )
+            .try_get_matches_from([
+                "bourso",
+                "--credentials",
+                "/unreadable/credentials",
+                "quote",
+                "--symbol",
+                "fixture",
+                operation,
+            ])
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn public_quotes_never_load_settings_and_use_only_injected_data() {
+        for operation in ["last", "highest", "lowest", "average", "volume"] {
+            let fetched = Cell::new(false);
+            parse_matches_with_dependencies(
+                quote_matches(operation),
+                |_| panic!("public quote must not load settings or credentials"),
+                |symbol, length, interval| {
+                    fetched.set(true);
+                    assert_eq!((symbol.as_str(), length, interval), ("fixture", 30, 0));
+                    async {
+                        Ok(GetTicksEOD {
+                            d: D {
+                                quote_tab: vec![QuoteTab {
+                                    high: 3.0,
+                                    low: 1.0,
+                                    close: 2.0,
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            },
+                        })
+                    }
+                },
+                || panic!("public quote must not construct a bank client"),
+            )
+            .await
+            .unwrap();
+            assert!(fetched.get());
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_quotes_return_errors_without_panicking() {
+        for operation in ["highest", "lowest", "average", "last"] {
+            let result = parse_matches_with_dependencies(
+                quote_matches(operation),
+                |_| panic!("quote unexpectedly loaded settings"),
+                |_, _, _| async { Ok(GetTicksEOD::default()) },
+                || panic!("public quote must not construct a bank client"),
+            )
+            .await;
+            assert!(result.is_err(), "empty {operation} was accepted");
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_customer_id_returns_before_any_quote_or_bank_work() {
+        for name in ["accounts", "export", "trade", "transfer"] {
+            let matches = Command::new("bourso")
+                .subcommands(["accounts", "export", "trade"].map(Command::new))
+                .subcommand(Command::new("transfer").arg(Arg::new("amount").default_value("10")))
+                .try_get_matches_from(["bourso", name])
+                .unwrap();
+            let result = parse_matches_with_dependencies(
+                matches,
+                |_| {
+                    Ok(Settings {
+                        customer_id: None,
+                        password: None,
+                    })
+                },
+                |_, _, _| async { panic!("unexpected quote HTTP request") },
+                || panic!("missing customer id must not construct a bank client"),
+            )
+            .await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("config --username"));
+        }
+    }
+    #[tokio::test]
+    async fn valid_configuration_reaches_bank_boundary_without_real_operation() {
+        let matches = Command::new("bourso")
+            .subcommand(Command::new("transfer"))
+            .subcommand(Command::new("accounts"))
+            .try_get_matches_from(["bourso", "accounts"])
+            .unwrap();
+        let result = parse_matches_with_dependencies(
+            matches,
+            |_| {
+                Ok(Settings {
+                    customer_id: Some("fixture".into()),
+                    password: Some("synthetic".into()),
+                })
+            },
+            |_, _, _| async { panic!("bank command must not fetch quotes") },
+            || anyhow::bail!("injected bank boundary reached; no HTTP performed"),
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "injected bank boundary reached; no HTTP performed"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_accepts_qd_without_history() {
+        parse_matches_with_dependencies(
+            quote_matches("last"),
+            |_| panic!("quote must not read settings"),
+            |_, _, _| async {
+                Ok(GetTicksEOD {
+                    d: D {
+                        last_quote: Some(QuoteTab {
+                            close: 7.0,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                })
+            },
+            || panic!("quote must not construct bank client"),
+        )
+        .await
+        .unwrap();
+    }
 }

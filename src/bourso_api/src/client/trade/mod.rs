@@ -3,7 +3,7 @@ pub mod feed;
 pub mod order;
 pub mod tick;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::account::{Account, AccountKind};
@@ -14,23 +14,27 @@ impl BoursoWebClient {
     pub async fn trade() {}
     pub async fn get_trading_summary(&self, account: Account) -> Result<Vec<TradingSummaryItem>> {
         let url = get_trading_summary_url(&self.config, account)?;
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = response.status();
 
-        let response = response.text().await?;
+        let response = response.text().await.map_err(reqwest::Error::without_url)?;
 
         if status_code != 200 {
             return Err(anyhow::anyhow!(
-                "Failed to get trading summary response: {}",
-                response
+                "Failed to get trading summary response, status code: {}",
+                status_code
             ));
         }
 
-        let summary: Vec<TradingSummaryItem> = serde_json::from_str(&response).context(format!(
-            "Failed to parse trading summary response. Response: {}",
-            response
-        ))?;
+        let summary: Vec<TradingSummaryItem> = serde_json::from_str(&response).map_err(|e| {
+            crate::client::safe_json_error("Failed to parse trading summary response", e)
+        })?;
         Ok(summary)
     }
 }

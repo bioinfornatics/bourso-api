@@ -1,11 +1,26 @@
-#[cfg(not(tarpaulin_include))]
 use crate::account::{Account, AccountKind};
+use crate::outcome::{OutcomeOperation, OutcomeStage, OutcomeUnknown};
 use crate::{client::transfer::error::TransferError, client::BoursoWebClient, constants::BASE_URL};
 use anyhow::{bail, Context, Result};
 use futures_util::stream::Stream;
 use tracing::debug;
 
 mod error;
+pub mod money;
+
+use money::{Money, MoneyError};
+
+/// Existing local policy: at most 50 UTF-8 bytes; provider contract unverified.
+/// Preserve the input verbatim (including empty or decomposed text); do not
+/// normalize, trim or count Unicode scalar values/graphemes instead of bytes.
+fn validate_transfer_reason_local_policy(reason: &str) -> std::result::Result<(), TransferError> {
+    const MAX_REASON_UTF8_BYTES_LOCAL_POLICY: usize = 50;
+    if reason.len() > MAX_REASON_UTF8_BYTES_LOCAL_POLICY {
+        Err(TransferError::ReasonIsTooLong)
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum TransferProgress {
@@ -18,11 +33,16 @@ pub enum TransferProgress {
     SubmittingStep5,
     SettingReason,
     ConfirmingTransfer,
+    /// The final submission response was received, not a verified execution receipt.
+    /// Check the bank before retrying: the transfer may already have been applied.
+    SubmittedUnverified,
+    /// Compatibility only; no longer emitted by the transfer streams.
+    #[deprecated(note = "Use SubmittedUnverified; transfer execution is not verified")]
     Completed,
 }
 
+#[allow(deprecated)]
 impl TransferProgress {
-    #[cfg(not(tarpaulin_include))]
     pub fn step_number(&self) -> u8 {
         match self {
             TransferProgress::Validating => 1,
@@ -34,7 +54,7 @@ impl TransferProgress {
             TransferProgress::SubmittingStep5 => 7,
             TransferProgress::SettingReason => 8,
             TransferProgress::ConfirmingTransfer => 9,
-            TransferProgress::Completed => 10,
+            TransferProgress::SubmittedUnverified | TransferProgress::Completed => 10,
         }
     }
 
@@ -42,7 +62,17 @@ impl TransferProgress {
         10
     }
 
-    #[cfg(not(tarpaulin_include))]
+    /// Operator notice for a finished submission, never proof of bank execution.
+    /// The CLI uses this same text so normal stream exhaustion cannot imply success.
+    pub fn submission_warning(&self) -> Option<&'static str> {
+        match self {
+            Self::SubmittedUnverified | Self::Completed => Some(
+                "Transfer submitted-unverified: submission response received; execution unverified. Verify in the bank before retrying; do not resubmit automatically.",
+            ),
+            _ => None,
+        }
+    }
+
     pub fn description(&self) -> &str {
         match self {
             TransferProgress::Validating => "Validating transfer parameters",
@@ -53,25 +83,31 @@ impl TransferProgress {
             TransferProgress::SettingAmount => "Setting transfer amount",
             TransferProgress::SubmittingStep5 => "Submitting intermediate step",
             TransferProgress::SettingReason => "Setting transfer reason",
-            TransferProgress::ConfirmingTransfer => "Confirming transfer",
-            TransferProgress::Completed => "Transfer completed",
+            TransferProgress::ConfirmingTransfer => "Submitting transfer request",
+            TransferProgress::SubmittedUnverified | TransferProgress::Completed => {
+                "Submission response received; execution unverified"
+            }
         }
     }
 }
 
 impl BoursoWebClient {
     /// Initialize the transfer and extract the transfer ID
-    #[cfg(not(tarpaulin_include))]
     async fn init_transfer(&self, from_account: &str) -> Result<String> {
         let init_transfer_url = format!(
             "{}/compte/cav/{}/virements/immediat/nouveau",
             BASE_URL, from_account
         );
 
-        let res = self.client.get(&init_transfer_url).send().await?;
+        let res = self
+            .client
+            .get(&init_transfer_url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 302 {
-            debug!("Init transfer response: {:?}", res);
+            debug!("Init transfer response status: {}", res.status());
             bail!(TransferError::TransferInitiationFailed);
         }
 
@@ -93,16 +129,20 @@ impl BoursoWebClient {
     }
 
     /// Extract the flow instance from the HTML response
-    #[cfg(not(tarpaulin_include))]
     async fn extract_flow_instance(&self, url: &str) -> Result<String> {
-        let res = self.client.get(url).send().await?;
+        let res = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("First transfer step response: {:?}", res);
+            debug!("First transfer step response status: {}", res.status());
             bail!(TransferError::TransferInitiationFailed);
         }
 
-        let res_text = res.text().await?;
+        let res_text = res.text().await.map_err(reqwest::Error::without_url)?;
         let re = regex::Regex::new(r#"name="flow_ImmediateCashTransfer_instance" value="([^"]+)""#)
             .unwrap();
         let flow_instance = re
@@ -116,7 +156,6 @@ impl BoursoWebClient {
     }
 
     /// Set the debit account (step 2)
-    #[cfg(not(tarpaulin_include))]
     async fn set_debit_account(
         &self,
         from_account: &str,
@@ -136,10 +175,16 @@ impl BoursoWebClient {
             BASE_URL, from_account, transfer_id
         );
 
-        let res = self.client.post(&url).multipart(data).send().await?;
+        let res = self
+            .client
+            .post(&url)
+            .multipart(data)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("Set debit account response: {:?}", res);
+            debug!("Set debit account response status: {}", res.status());
             bail!(TransferError::SetDebitAccountFailed);
         }
 
@@ -147,7 +192,6 @@ impl BoursoWebClient {
     }
 
     /// Set the credit account (step 3)
-    #[cfg(not(tarpaulin_include))]
     async fn set_credit_account(
         &self,
         from_account: &str,
@@ -175,10 +219,16 @@ impl BoursoWebClient {
             BASE_URL, from_account, transfer_id
         );
 
-        let res = self.client.post(&url).multipart(data).send().await?;
+        let res = self
+            .client
+            .post(&url)
+            .multipart(data)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("Set credit account response: {:?}", res);
+            debug!("Set credit account response status: {}", res.status());
             bail!(TransferError::SetCreditAccountFailed);
         }
 
@@ -186,13 +236,12 @@ impl BoursoWebClient {
     }
 
     /// Set the transfer amount (step 4)
-    #[cfg(not(tarpaulin_include))]
     async fn set_transfer_amount(
         &self,
         from_account: &str,
         transfer_id: &str,
         flow_instance: &str,
-        amount: f64,
+        amount: Money,
     ) -> Result<()> {
         let data = reqwest::multipart::Form::new()
             .text(
@@ -200,7 +249,7 @@ impl BoursoWebClient {
                 flow_instance.to_string(),
             )
             .text("flow_ImmediateCashTransfer_step", "3".to_string())
-            .text("Amount[amount]", format!("{:.2}", amount).replace('.', ","))
+            .text("Amount[amount]", amount.bank_amount())
             .text("flow_ImmediateCashTransfer_transition", "".to_string())
             .text("submit", "".to_string());
 
@@ -209,10 +258,16 @@ impl BoursoWebClient {
             BASE_URL, from_account, transfer_id
         );
 
-        let res = self.client.post(&url).multipart(data).send().await?;
+        let res = self
+            .client
+            .post(&url)
+            .multipart(data)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("Set amount response: {:?}", res);
+            debug!("Set amount response status: {}", res.status());
             bail!(TransferError::SetAmountFailed);
         }
 
@@ -220,7 +275,6 @@ impl BoursoWebClient {
     }
 
     /// Submit step 5
-    #[cfg(not(tarpaulin_include))]
     async fn submit_step_5(
         &self,
         from_account: &str,
@@ -245,10 +299,11 @@ impl BoursoWebClient {
             ))
             .multipart(data)
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("Submit transfer response: {:?}", res);
+            debug!("Submit transfer response status: {}", res.status());
             bail!(TransferError::Step5Failed);
         }
 
@@ -256,7 +311,6 @@ impl BoursoWebClient {
     }
 
     /// Set the transfer reason (step 8)
-    #[cfg(not(tarpaulin_include))]
     async fn set_transfer_reason(
         &self,
         from_account: &str,
@@ -281,18 +335,23 @@ impl BoursoWebClient {
             BASE_URL, from_account, transfer_id
         );
 
-        let res = self.client.post(&url).multipart(data).send().await?;
+        let res = self
+            .client
+            .post(&url)
+            .multipart(data)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
-            debug!("Set reason response: {:?}", res);
+            debug!("Set reason response status: {}", res.status());
             bail!(TransferError::SetReasonFailed);
         }
 
         Ok(())
     }
 
-    /// Confirm and finalize the transfer (step 10)
-    #[cfg(not(tarpaulin_include))]
+    /// Send the final transfer request (step 10), without asserting execution.
     async fn confirm_transfer(
         &self,
         from_account: &str,
@@ -309,6 +368,7 @@ impl BoursoWebClient {
             .text("flow_ImmediateCashTransfer_transition", "".to_string())
             .text("submit", "".to_string());
 
+        let unknown = OutcomeUnknown::new(OutcomeOperation::Transfer, transfer_id);
         let res = self
             .client
             .post(format!(
@@ -317,34 +377,45 @@ impl BoursoWebClient {
             ))
             .multipart(data)
             .send()
-            .await?;
+            .await
+            .map_err(|_| unknown.at_stage(OutcomeStage::Sending))?;
 
         if res.status() != 200 {
-            debug!("Confirm transfer response: {:?}", res);
-            bail!(TransferError::SubmitTransferFailed);
+            return Err(unknown.at_stage(OutcomeStage::HttpStatus).into());
         }
 
-        let body = res.text().await?;
+        let _body = res
+            .text()
+            .await
+            .map_err(|_| unknown.at_stage(OutcomeStage::ReadingResponse))?;
 
-        if body.as_str().contains("Confirmation") {
-            Ok(())
-        } else {
-            debug!("Cannot find confirmation message in response {:?}", body);
-            bail!(TransferError::InvalidTransfer);
-        }
+        // No trusted receipt contract is available. HTTP 200, a "Confirmation"
+        // heading, an error page, or a login form cannot establish execution.
+        // Consume the response to retain read-failure classification, but never
+        // parse, log or expose its potentially sensitive contents as proof.
+        Ok(())
     }
 
-    /// Transfer funds from one account to another, yielding progress updates
+    /// Transfer funds from one account to another, yielding progress updates.
+    ///
+    /// A final submission error may downcast to [`OutcomeUnknown`]. Do not
+    /// reissue automatically. Dropping the stream cannot return this error;
+    /// callers need durable external state for cancellation/crash recovery.
+    /// Normal exhaustion ends with [`TransferProgress::SubmittedUnverified`], not
+    /// verified execution. HTTP 200 is only a submission response. Verify with the
+    /// bank before retrying; no automatic resubmission is safe. Progress reaching
+    /// 100% describes this local submission process, not bank execution.
     ///
     /// ## Arguments
-    /// - `amount`: Amount to transfer (must be >= 10.0)
+    /// - `amount`: Amount to transfer (>= 10 EUR, finite, at most two decimal
+    ///   places in its shortest round-trip decimal spelling; never rounded).
     /// - `from_account`: Source account
     /// - `to_account`: Destination account
-    /// - `reason`: Optional reason for the transfer (max 50 characters)
+    /// - `reason`: Optional reason (max 50 UTF-8 bytes, local policy; provider
+    ///   contract unverified). No Unicode normalization or trimming is performed.
     ///
     /// ## Returns
     /// A stream of progress updates for the transfer.
-    #[cfg(not(tarpaulin_include))]
     pub fn transfer_funds(
         &self,
         amount: f64,
@@ -352,37 +423,62 @@ impl BoursoWebClient {
         to_account: Account,
         reason: Option<String>,
     ) -> impl Stream<Item = Result<TransferProgress>> + '_ {
-        async_stream::stream! {
-            // Validation
-            yield Ok(TransferProgress::Validating);
+        self.transfer_validated(Money::try_from(amount), from_account, to_account, reason)
+    }
 
-            if amount < 10.0 {
-                yield Err(TransferError::AmountTooLow.into());
-                return;
-            }
+    /// Transfer an exact decimal amount without passing through floating point.
+    ///
+    /// Like [`Self::transfer_funds`], normal completion is submitted-unverified,
+    /// never a verified bank execution receipt. Check the bank before retrying.
+    ///
+    /// `reason` uses the same max 50 UTF-8 bytes local policy as `transfer_funds`;
+    /// provider contract unverified. The supplied text is preserved verbatim.
+    pub fn transfer_money(
+        &self,
+        amount: Money,
+        from_account: Account,
+        to_account: Account,
+        reason: Option<String>,
+    ) -> impl Stream<Item = Result<TransferProgress>> + '_ {
+        self.transfer_validated(Ok(amount), from_account, to_account, reason)
+    }
+
+    fn transfer_validated(
+        &self,
+        amount: std::result::Result<Money, MoneyError>,
+        from_account: Account,
+        to_account: Account,
+        reason: Option<String>,
+    ) -> impl Stream<Item = Result<TransferProgress>> + '_ {
+        async_stream::stream! {
+            yield Ok(TransferProgress::Validating);
+            let amount = match amount {
+                Ok(amount) => amount,
+                Err(MoneyError::TooLow) => {
+                    yield Err(TransferError::AmountTooLow.into());
+                    return;
+                }
+                Err(error) => {
+                    yield Err(error.into());
+                    return;
+                }
+            };
 
             debug!(
-                "Initiating transfer of {:.2} EUR from account {} to account {}",
-                amount,
-                from_account.id,
-                to_account.id
+                "Initiating transfer of {} EUR",
+                amount
             );
 
             let transfer_from_banking = from_account.kind == AccountKind::Banking;
             let from_account_id = from_account.id.clone();
             let to_account_id = to_account.id.clone();
 
-            // Default reason if none provided, else use provided reason and
-            // warn if the reason is too long (> 50 characters)
-            let transfer_reason = if let Some(r) = reason {
-                if r.len() > 50 {
-                    yield Err(TransferError::ReasonIsTooLong.into());
-                    return;
-                }
-                r
-            } else {
-                "Virement depuis BoursoBank".to_string()
-            };
+            let transfer_reason = reason.unwrap_or_else(|| "Virement depuis BoursoBank".to_string());
+            // Enforce the existing local byte policy before any transfer request.
+            if let Err(error) = validate_transfer_reason_local_policy(&transfer_reason) {
+                yield Err(error.into());
+                return;
+            }
 
             // Step 1: Initialize transfer and get transfer ID
             yield Ok(TransferProgress::InitializingTransfer);
@@ -468,7 +564,159 @@ impl BoursoWebClient {
                 return;
             }
 
-            yield Ok(TransferProgress::Completed);
+            yield Ok(TransferProgress::SubmittedUnverified);
         }
     }
 }
+
+#[cfg(test)]
+mod money_tests;
+
+#[cfg(test)]
+mod outcome_tests {
+    use crate::outcome::{tests::*, OutcomeOperation, OutcomeStage};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn final_transfer_post_errors_are_unknown_without_retry() {
+        run(async {
+            for (reply, stage) in [
+                ("", OutcomeStage::Sending),
+                ("HTTP/1.1 200 OK\r\nContent-Length: 999\r\nConnection: close\r\n\r\n<", OutcomeStage::ReadingResponse),
+                ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", OutcomeStage::HttpStatus),
+            ] {
+                let (client, applied, worker) = server(reply);
+                let error = client.confirm_transfer(SECRET, SECRET, SECRET).await.unwrap_err();
+                worker.join().unwrap();
+                assert_eq!(applied.load(Ordering::SeqCst), 1);
+                assert_unknown(error, OutcomeOperation::Transfer, stage);
+            }
+        });
+    }
+
+    #[test]
+    fn confirmation_response_is_received_but_not_a_validated_receipt() {
+        run(async {
+            let (client, applied, worker) = server(
+                "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nConfirmation",
+            );
+            assert!(client
+                .confirm_transfer(SECRET, SECRET, SECRET)
+                .await
+                .is_ok());
+            worker.join().unwrap();
+            assert_eq!(applied.load(Ordering::SeqCst), 1);
+        });
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+    use futures_util::{pin_mut, StreamExt};
+    use std::{net::TcpListener, time::Duration};
+
+    fn cases() -> Vec<(Option<String>, bool)> {
+        vec![
+            (None, true),
+            (Some(String::new()), true),
+            (Some("a".repeat(50)), true),
+            (Some("a".repeat(51)), false),
+            (Some("é".repeat(25)), true),
+            (Some("é".repeat(26)), false),
+            (Some("😀".repeat(12)), true),
+            (Some("😀".repeat(13)), false),
+            // Each decomposed e + combining acute is three UTF-8 bytes.
+            (Some("e\u{301}".repeat(16)), true),
+            (Some(format!("{}ab", "e\u{301}".repeat(16))), true),
+            (Some("e\u{301}".repeat(17)), false),
+        ]
+    }
+
+    #[test]
+    fn existing_reason_byte_boundaries_gate_both_public_streams_before_requests() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let client = BoursoWebClient::for_test(
+                    listener.local_addr().unwrap(),
+                    Duration::from_secs(3),
+                )
+                .unwrap();
+                for legacy in [false, true] {
+                    for (reason, accepted) in cases() {
+                        let stream: std::pin::Pin<
+                            Box<dyn Stream<Item = Result<TransferProgress>> + '_>,
+                        > = if legacy {
+                            Box::pin(client.transfer_funds(
+                                10.0,
+                                Account::default(),
+                                Account::default(),
+                                reason.clone(),
+                            ))
+                        } else {
+                            Box::pin(client.transfer_money(
+                                "10".parse().unwrap(),
+                                Account::default(),
+                                Account::default(),
+                                reason.clone(),
+                            ))
+                        };
+                        pin_mut!(stream);
+                        assert!(matches!(
+                            stream.next().await.unwrap().unwrap(),
+                            TransferProgress::Validating
+                        ));
+                        let next = stream.next().await.unwrap();
+                        if accepted {
+                            // Local acceptance only: stop before polling the first request.
+                            assert!(matches!(
+                                next.unwrap(),
+                                TransferProgress::InitializingTransfer
+                            ));
+                        } else {
+                            let error = next.unwrap_err();
+                            assert!(matches!(
+                                error.downcast_ref::<TransferError>(),
+                                Some(TransferError::ReasonIsTooLong)
+                            ));
+                            let reason = reason.as_ref().unwrap();
+                            assert!(!error.to_string().contains(reason));
+                            assert!(!format!("{error:?}").contains(reason));
+                            assert!(stream.next().await.is_none());
+                        }
+                        assert_eq!(
+                            listener.accept().unwrap_err().kind(),
+                            std::io::ErrorKind::WouldBlock
+                        );
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn pure_local_policy_preserves_existing_byte_boundaries() {
+        for (reason, accepted) in cases() {
+            let reason = reason.unwrap_or_else(|| "Virement depuis BoursoBank".to_string());
+            assert_eq!(
+                validate_transfer_reason_local_policy(&reason).is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
+    fn reason_error_labels_the_local_byte_policy_not_a_provider_contract() {
+        assert_eq!(
+            TransferError::ReasonIsTooLong.to_string(),
+            "Transfer reason is too long, max 50 UTF-8 bytes, local policy; provider contract unverified"
+        );
+    }
+}
+
+#[cfg(test)]
+mod submission_tests;

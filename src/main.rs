@@ -26,30 +26,7 @@ async fn main() -> Result<()> {
         .about("BoursoBank/Boursorama CLI")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(
-            Command::new("accounts")
-                .about("Manage your saving accounts")
-                .arg(
-                    Arg::new("bank")
-                        .long("banking")
-                        .help("List all your base banking accounts")
-                )
-                .arg(
-                    Arg::new("saving")
-                        .long("saving")
-                        .help("List all your saving accounts")
-                )
-                .arg(
-                    Arg::new("trading")
-                        .long("trading")
-                        .help("List all your trading accounts")
-                )
-                .arg(
-                    Arg::new("loans")
-                        .long("loans")
-                        .help("List all your loans")
-                )
-        )
+        .subcommand(bourso_cli::account_filters::command())
         .subcommand(
             Command::new("config")
                 .about("Configure BoursoBank/Boursorama CLI")
@@ -205,32 +182,7 @@ async fn main() -> Result<()> {
                         )
                 )
         )
-        .subcommand(
-            Command::new("transfer")
-                .about("Make a transfer between your accounts")
-                .arg(account_arg.clone())
-                .arg(
-                    Arg::new("to_account")
-                        .long("to")
-                        .help(
-                            r#"The destination account id as an hexadecimal string (32 characters).
-    You can get this info with the command `bourso accounts`"#
-                        )
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("amount")
-                        .long("amount")
-                        .help("The amount to transfer")
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("reason")
-                        .long("reason")
-                        .help("The reason for the transfer (max 50 characters)")
-                        .required(false)
-                )
-        )
+        .subcommand(bourso_cli::money::command(account_arg.clone()))
         .arg(
             Arg::new("credentials")
                 .long("credentials")

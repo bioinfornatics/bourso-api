@@ -1,0 +1,985 @@
+use super::BoursoWebClient;
+use std::net::SocketAddr;
+
+fn fixture_client(address: SocketAddr) -> BoursoWebClient {
+    BoursoWebClient::for_test(address, std::time::Duration::from_secs(2)).unwrap()
+}
+
+const DESTINATIONS: &[&str] = &[
+    "https://clients.boursobank.com/connexion/?next=%2Fdashboard",
+    "https://api.boursobank.com/services/api/v1.7/_user_/_fixture_/trading",
+    "https://www.boursorama.com/bourse/action/graph/ws/GetTicksEOD?symbol=TEST&guid=",
+    "https://redirect.invalid/export.csv?download=1",
+    "http://192.0.2.1:9999/absolute-redirect",
+];
+
+#[test]
+fn all_request_destinations_are_local() {
+    let address: SocketAddr = "127.0.0.1:32123".parse().unwrap();
+    let client = fixture_client(address);
+    for original in DESTINATIONS {
+        for builder in [client.client.get(*original), client.client.post(*original)] {
+            let request = builder.build().unwrap();
+            let original = reqwest::Url::parse(original).unwrap();
+            assert_eq!(request.url().scheme(), "http");
+            assert_eq!(request.url().host_str(), Some("127.0.0.1"));
+            assert_eq!(request.url().port(), Some(32123));
+            assert_eq!(request.url().path(), original.path());
+            assert_eq!(request.url().query(), original.query());
+        }
+    }
+}
+
+use std::{
+    future::Future,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use tokio::sync::mpsc;
+
+const BOUND: Duration = Duration::from_secs(3);
+
+enum Reply {
+    Http(String),
+    Hold,
+    Close,
+}
+
+fn response(status: &str, headers: &str, body: &str) -> Reply {
+    Reply::Http(format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
+        body.len()
+    ))
+}
+
+fn ok(body: &str) -> Reply {
+    response("200 OK", "", body)
+}
+
+#[derive(Debug)]
+enum Event {
+    Request(String),
+    Disconnected,
+}
+
+/// Small scripted HTTP/1 fixture. Every accept/read/write has a deadline;
+/// Drop stops and joins the worker, including when an assertion fails.
+struct Server {
+    address: SocketAddr,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<Vec<String>>>,
+    events: mpsc::UnboundedReceiver<Event>,
+}
+
+impl Server {
+    fn new(replies: Vec<Reply>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let (sender, events) = mpsc::unbounded_channel();
+        let worker = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for reply in replies {
+                let deadline = Instant::now() + BOUND;
+                let mut stream = loop {
+                    if stopped.load(Ordering::Relaxed) {
+                        return requests;
+                    }
+                    assert!(Instant::now() < deadline, "fixture accept timed out");
+                    match listener.accept() {
+                        Ok((stream, peer)) => {
+                            assert!(peer.ip().is_loopback());
+                            break stream;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(e) => panic!("fixture accept: {e}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(50)))
+                    .unwrap();
+                stream.set_write_timeout(Some(BOUND)).unwrap();
+                let request = read_request(&mut stream);
+                requests.push(request.clone());
+                let _ = sender.send(Event::Request(request));
+                match reply {
+                    Reply::Http(response) => stream.write_all(response.as_bytes()).unwrap(),
+                    Reply::Close => (),
+                    Reply::Hold => {
+                        let deadline = Instant::now() + BOUND;
+                        let mut byte = [0];
+                        while !stopped.load(Ordering::Relaxed) && Instant::now() < deadline {
+                            match stream.read(&mut byte) {
+                                Ok(0) => {
+                                    let _ = sender.send(Event::Disconnected);
+                                    break;
+                                }
+                                Ok(_) => panic!("unexpected bytes on held request"),
+                                Err(e)
+                                    if matches!(
+                                        e.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) => {}
+                                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                                    let _ = sender.send(Event::Disconnected);
+                                    break;
+                                }
+                                Err(e) => panic!("fixture hold: {e}"),
+                            }
+                        }
+                    }
+                }
+            }
+            requests
+        });
+        Self {
+            address,
+            stop,
+            worker: Some(worker),
+            events,
+        }
+    }
+
+    async fn event(&mut self) -> Event {
+        tokio::time::timeout(BOUND, self.events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        self.worker.take().unwrap().join().unwrap()
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let result = worker.join();
+            if !thread::panicking() {
+                result.unwrap();
+            }
+        }
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> String {
+    let deadline = Instant::now() + BOUND;
+    let mut bytes = Vec::new();
+    let mut expected_length = None;
+    while Instant::now() < deadline && bytes.len() < 128 * 1024 {
+        let mut buffer = [0; 4096];
+        match stream.read(&mut buffer) {
+            Ok(0) => panic!("incomplete fixture request"),
+            Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            Err(e) => panic!("fixture read: {e}"),
+        }
+        if expected_length.is_none() {
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                assert!(
+                    !headers.contains("transfer-encoding:"),
+                    "fixture requires Content-Length"
+                );
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map(|s| s.trim().parse::<usize>().unwrap())
+                    .unwrap_or(0);
+                expected_length = Some(end + 4 + length);
+            }
+        }
+        if expected_length == Some(bytes.len()) {
+            return String::from_utf8(bytes).unwrap();
+        }
+    }
+    panic!("fixture request exceeded time/size bound");
+}
+
+fn run(future: impl Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), future)
+                .await
+                .unwrap()
+        });
+}
+
+#[test]
+fn production_destinations_are_unchanged_without_sending() {
+    let client = BoursoWebClient::new();
+    for original in DESTINATIONS {
+        for builder in [client.client.get(*original), client.client.post(*original)] {
+            assert_eq!(builder.build().unwrap().url().as_str(), *original);
+        }
+    }
+}
+
+#[test]
+fn loopback_only_and_fail_closed_routing() {
+    for address in ["192.0.2.1:80", "0.0.0.0:1234", "[::]:1234", "127.0.0.1:0"] {
+        assert!(BoursoWebClient::for_test(address.parse().unwrap(), BOUND).is_err());
+    }
+    for address in ["127.0.0.1:1234", "[::1]:4321"] {
+        let client = fixture_client(address.parse().unwrap());
+        let original = "https://user:password@outside.invalid:9999//outside.invalid/a%2Fb?url=https%3A%2F%2Foutside.invalid#fragment";
+        let first = client.client.get(original).build().unwrap();
+        assert_eq!(
+            first.url().origin().ascii_serialization(),
+            format!("http://{address}")
+        );
+        assert_eq!(first.url().username(), "");
+        assert_eq!(first.url().password(), None);
+        assert_eq!(first.url().path(), "//outside.invalid/a%2Fb");
+        assert_eq!(
+            client
+                .client
+                .get(first.url().clone())
+                .build()
+                .unwrap()
+                .url(),
+            first.url()
+        );
+        assert!(client.client.get("not a URL").build().is_err());
+        assert!(client
+            .client
+            .post("/relative-without-origin")
+            .build()
+            .is_err());
+    }
+}
+
+#[test]
+fn export_follows_relative_and_bank_redirects_locally_with_cookies() {
+    for location in [
+        "/fixture/export.csv?download=1",
+        "https://clients.boursobank.com/fixture/export.csv?download=1",
+        "../fixture/export.csv?download=1",
+        "//clients.boursobank.com/fixture/export.csv?download=1",
+    ] {
+        run(async {
+            let server = Server::new(vec![
+                response("200 OK", "Set-Cookie: session=fixture; Path=/\r\n", r#"<input name="movementSearch[_token]" value="fixture-csrf">"#),
+                response("302 Found", &format!("Location: {location}\r\nSet-Cookie: redirected=yes; Path=/\r\n"), ""),
+                ok("dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n2026-01-02;2026-01-02;Fixture;;;;12,34;;fake;Test;42,00\n"),
+            ]);
+            let client = fixture_client(server.address);
+            let transactions = client
+                .get_transactions("fake", "01/01/2026", "02/01/2026")
+                .await
+                .unwrap();
+            assert_eq!(transactions.len(), 1);
+            assert_eq!(transactions[0].label, "Fixture");
+            assert_eq!(transactions[0].amount, 12.34);
+            let requests = server.finish();
+            assert!(requests[0].starts_with("GET /mon-budget/generate HTTP/1.1"));
+            assert!(requests[1].starts_with("POST /budget/exporter-mouvements HTTP/1.1"));
+            assert!(requests[1].contains("movementSearch%5B_token%5D=fixture-csrf"));
+            assert!(requests[1].contains("session=fixture"));
+            assert!(requests[2].starts_with("GET /fixture/export.csv?download=1 HTTP/1.1"));
+            assert!(requests[2].contains("session=fixture"));
+            assert!(requests[2].contains("redirected=yes"));
+        });
+    }
+}
+
+#[test]
+fn session_cookies_dynamic_api_and_public_ticks_share_local_transport() {
+    run(async {
+        let config = super::config::Config {
+            api_url: "https://api.boursobank.com/services/api/v1.7".into(),
+            user_hash: Some("fixture".into()),
+            ..Default::default()
+        };
+        let page = format!(
+            r#"<input name="form[_token]" value="fixture-token" > <script>window.BRS_CONFIG = {};</script>"#,
+            serde_json::to_string(&config).unwrap()
+        );
+        let server = Server::new(vec![
+            ok("document.cookie=\"__brs_mit=fixture-mit;\";"),
+            ok(&page),
+            ok(&super::newpad_tests::keyboard(
+                &super::newpad_tests::entries(),
+            )),
+            ok("[]"),
+            ok("[]"),
+            ok(r#"{"d":{"Name":"Fixture","SymbolId":"TEST","Xperiod":0,"QuoteTab":[]}}"#),
+        ]);
+        let mut client = fixture_client(server.address);
+        client.init_session().await.unwrap();
+        assert_eq!(client.token, "fixture-token");
+        assert_eq!(client.challenge_id, "fixture-challenge");
+        client
+            .get_trading_summary(crate::account::Account {
+                id: "fake".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // No captured base: later configuration changes still map to the fixture.
+        client.config.api_url = "https://changed.invalid/changed-api".into();
+        client
+            .get_trading_summary(crate::account::Account {
+                id: "fake".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let ticks = client.get_ticks("TEST", 30, 0).await.unwrap();
+        assert_eq!(ticks.d.name, "Fixture");
+        let requests = server.finish();
+        assert_eq!(requests.len(), 6);
+        for request in &requests[1..] {
+            assert!(request.contains("__brs_mit=fixture-mit"));
+            assert!(request.contains("brsDomainMigration=migrated"));
+        }
+        assert!(requests[2].starts_with("GET /connexion/clavier-virtuel?_hinclude=1 "));
+        assert!(requests[3]
+            .starts_with("GET /services/api/v1.7/_user_/_fixture_/trading/accounts/summary/fake?"));
+        assert!(requests[4]
+            .starts_with("GET /changed-api/_user_/_fixture_/trading/accounts/summary/fake?"));
+        assert!(requests[5].starts_with(
+            "GET /bourse/action/graph/ws/GetTicksEOD?symbol=TEST&length=30&period=0&guid= "
+        ));
+    });
+}
+
+#[test]
+fn automatic_redirects_stay_disabled() {
+    run(async {
+        let server = Server::new(vec![response(
+            "302 Found",
+            "Location: https://outside.invalid/not-followed\r\n",
+            "",
+        )]);
+        let client = fixture_client(server.address);
+        let response = client.client.get(DESTINATIONS[0]).send().await.unwrap();
+        assert_eq!(response.status(), 302);
+        assert_eq!(server.finish().len(), 1);
+    });
+}
+
+#[test]
+fn public_request_timeout_disconnects_without_fallback() {
+    run(async {
+        let mut server = Server::new(vec![Reply::Hold]);
+        let client = BoursoWebClient::for_test(server.address, Duration::from_millis(150)).unwrap();
+        let error = client.get_ticks("TEST", 1, 0).await.unwrap_err();
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+        assert!(matches!(server.event().await, Event::Request(_)));
+        assert!(matches!(server.event().await, Event::Disconnected));
+        assert_eq!(server.finish().len(), 1);
+    });
+}
+
+#[test]
+fn dropping_public_request_cancels_in_flight_io() {
+    run(async {
+        let mut server = Server::new(vec![Reply::Hold]);
+        let client = fixture_client(server.address);
+        let pending = Box::pin(client.get_ticks("TEST", 1, 0));
+        let event = Box::pin(server.event());
+        match futures_util::future::select(event, pending).await {
+            futures_util::future::Either::Left((Event::Request(request), pending)) => {
+                assert!(request.starts_with("GET /bourse/action/graph/ws/GetTicksEOD?"));
+                drop(pending);
+            }
+            _ => panic!("held request completed before cancellation"),
+        }
+        assert!(matches!(server.event().await, Event::Disconnected));
+        assert_eq!(server.finish().len(), 1);
+    });
+}
+
+#[test]
+fn transport_status_and_parse_errors_propagate() {
+    run(async {
+        for (reply, expected) in [
+            (
+                response("503 Service Unavailable", "", "fixture unavailable"),
+                "503",
+            ),
+            (ok("not-json"), "Failed to parse get ticks response"),
+        ] {
+            let server = Server::new(vec![reply]);
+            let client = fixture_client(server.address);
+            let error = client.get_ticks("TEST", 1, 0).await.unwrap_err();
+            assert!(error.to_string().contains(expected));
+            assert_eq!(server.finish().len(), 1);
+        }
+        let server = Server::new(vec![Reply::Close]);
+        let client = fixture_client(server.address);
+        let error = client.get_ticks("TEST", 1, 0).await.unwrap_err();
+        assert!(error.downcast_ref::<reqwest::Error>().is_some());
+        assert_eq!(server.finish().len(), 1);
+    });
+}
+
+// Logging regressions exercise the real MFA branches through the confined seam.
+const LOG_SECRETS: &[&str] = &[
+    "SENTINEL_BODY",
+    "SENTINEL_USER",
+    "SENTINEL_OTP",
+    "SENTINEL_TOKEN",
+    "SENTINEL_STATE",
+    "SENTINEL_QR",
+];
+
+fn logging_config() -> super::config::Config {
+    super::config::Config {
+        api_url: "https://fixture.invalid/api".into(),
+        user_hash: Some("SENTINEL_USER".into()),
+        default_api_bearer: "SENTINEL_TOKEN".into(),
+        ..Default::default()
+    }
+}
+
+fn logging_mfa_page() -> String {
+    let params = serde_json::json!({"challenges":[{"parameters":{"formScreen":{"actions":{"check":{"api":{"params":{"resourceId":"SENTINEL_OTP","formState":"SENTINEL_STATE"}}}}}}}]});
+    format!(
+        r#"brs-otp-webtoapp <input name="form[_token]" value="SENTINEL_TOKEN" > window.BRS_CONFIG = {}; <div data-strong-authentication-payload="{}">"#,
+        serde_json::to_string(&logging_config()).unwrap(),
+        params.to_string().replace('"', "&quot;")
+    )
+}
+
+#[test]
+fn logging_mfa_request_branches() {
+    use super::logging_tests::{assert_clean, capture};
+    for enabled in [true, false] {
+        for page in [
+            "SENTINEL_BODY",
+            "brs-otp-sms SENTINEL_BODY",
+            "brs-otp-email SENTINEL_BODY",
+        ] {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let server = Server::new(vec![ok(""), ok(page)]);
+                    let error = fixture_client(server.address)
+                        .request_mfa()
+                        .await
+                        .unwrap_err();
+                    assert_clean(Some(&error), "", LOG_SECRETS);
+                    assert_eq!(server.finish().len(), 2);
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+        for (case, reply) in [
+            ok(r#"{"success":true,"secret":"SENTINEL_BODY"}"#),
+            ok(r#"{"success":false,"secret":"SENTINEL_BODY"}"#),
+            response("503 Unavailable", "", "SENTINEL_BODY"),
+            ok(r#"{"secret":"SENTINEL_BODY", invalid}"#),
+            Reply::Close,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let server = Server::new(vec![ok(""), ok(&logging_mfa_page()), reply]);
+                    let result = fixture_client(server.address).request_mfa().await;
+                    assert_eq!(result.is_ok(), case == 0);
+                    assert_clean(result.as_ref().err(), "", LOG_SECRETS);
+                    assert_eq!(server.finish().len(), 3);
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+    }
+}
+
+#[test]
+fn logging_mfa_check_branches() {
+    use super::logging_tests::{assert_clean, capture};
+    for enabled in [true, false] {
+        let authenticated = format!(
+            r#"href="/se-deconnecter" window.BRS_CONFIG = {};"#,
+            serde_json::to_string(&logging_config()).unwrap()
+        );
+        for (case, replies) in [
+            vec![response("503 Unavailable", "", "SENTINEL_BODY")],
+            vec![ok(r#"{"success":false,"secret":"SENTINEL_BODY"}"#)],
+            vec![ok(r#"{"success":false,"qrcode":"SENTINEL_QR"}"#)],
+            vec![ok(r#"{"secret":"SENTINEL_BODY", invalid}"#)],
+            vec![Reply::Close],
+            vec![
+                ok(r#"{"success":true}"#),
+                response("302 Found", "", ""),
+                ok("SENTINEL_BODY"),
+            ],
+            vec![
+                ok(r#"{"success":true}"#),
+                response("302 Found", "", ""),
+                ok(&authenticated),
+            ],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let count = replies.len();
+                    let server = Server::new(replies);
+                    let mut client = fixture_client(server.address);
+                    client.config = logging_config();
+                    let result = client
+                        .check_mfa(
+                            super::MfaType::WebToApp,
+                            "SENTINEL_OTP".into(),
+                            "SENTINEL_STATE".into(),
+                            "SENTINEL_TOKEN".into(),
+                        )
+                        .await;
+                    match case {
+                        1 => assert!(!result.as_ref().unwrap()),
+                        6 => assert!(*result.as_ref().unwrap()),
+                        2 => match result
+                            .as_ref()
+                            .unwrap_err()
+                            .downcast_ref::<super::error::ClientError>()
+                        {
+                            Some(super::error::ClientError::QRCodeRequired(code)) => {
+                                assert_eq!(code, "SENTINEL_QR")
+                            }
+                            _ => panic!("QR payload must remain available to the MFA consumer"),
+                        },
+                        _ => assert!(result.is_err()),
+                    }
+                    assert_clean(result.as_ref().err(), "", LOG_SECRETS);
+                    assert_eq!(server.finish().len(), count);
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+    }
+}
+
+#[test]
+fn logging_login_account_trade_and_export_failures() {
+    use super::logging_tests::{assert_clean, capture};
+    for enabled in [true, false] {
+        let (_, logs) = capture(enabled, || {
+            run(async {
+                let server = Server::new(vec![ok("SENTINEL_BODY")]);
+                let mut client = fixture_client(server.address);
+                client.virtual_pad_ids = super::newpad_tests::entries()
+                    .into_iter()
+                    .map(|entry| entry.0)
+                    .collect();
+                let error = client.login("SENTINEL_USER", "12345678").await.unwrap_err();
+                assert_clean(Some(&error), "", LOG_SECRETS);
+                server.finish();
+                let server = Server::new(vec![response("302 Found", "", ""), ok("SENTINEL_BODY")]);
+                let mut client = fixture_client(server.address);
+                client.virtual_pad_ids = super::newpad_tests::entries()
+                    .into_iter()
+                    .map(|entry| entry.0)
+                    .collect();
+                let error = client.login("SENTINEL_USER", "12345678").await.unwrap_err();
+                assert_clean(Some(&error), "", LOG_SECRETS);
+                server.finish();
+                let server = Server::new(vec![ok("SENTINEL_BODY")]);
+                let error = fixture_client(server.address)
+                    .get_accounts(Some(crate::account::AccountKind::Banking))
+                    .await
+                    .unwrap_err();
+                assert_clean(Some(&error), "", LOG_SECRETS);
+                server.finish();
+                for reply in [
+                    response("503 Unavailable", "", "SENTINEL_BODY"),
+                    ok(r#""SENTINEL_BODY""#),
+                    Reply::Close,
+                ] {
+                    let server = Server::new(vec![reply]);
+                    let mut client = fixture_client(server.address);
+                    client.config = logging_config();
+                    let error = client
+                        .get_trading_summary(crate::account::Account {
+                            id: "SENTINEL_USER".into(),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap_err();
+                    assert_clean(Some(&error), "", LOG_SECRETS);
+                    server.finish();
+                }
+                for reply in [
+                    response("503 Unavailable", "", "SENTINEL_BODY"),
+                    ok(r#""SENTINEL_BODY""#),
+                    Reply::Close,
+                ] {
+                    let server = Server::new(vec![reply]);
+                    let error = fixture_client(server.address)
+                        .get_ticks("SENTINEL_TOKEN", 1, 0)
+                        .await
+                        .unwrap_err();
+                    assert_clean(Some(&error), "", LOG_SECRETS);
+                    server.finish();
+                }
+                let server = Server::new(vec![
+                    ok(r#"<input name="movementSearch[_token]" value="SENTINEL_TOKEN">"#),
+                    response("302 Found", "Location: /SENTINEL_TOKEN\r\n", ""),
+                    ok("<html>SENTINEL_BODY"),
+                ]);
+                let error = fixture_client(server.address)
+                    .get_transactions("SENTINEL_USER", "01/01/2026", "02/01/2026")
+                    .await
+                    .unwrap_err();
+                assert_clean(Some(&error), "", LOG_SECRETS);
+                server.finish();
+            })
+        });
+        assert_clean(None, &logs, LOG_SECRETS);
+    }
+}
+
+#[test]
+fn logging_transfer_all_response_diagnostics() {
+    use super::logging_tests::{assert_clean, capture};
+    use futures_util::StreamExt;
+    for enabled in [true, false] {
+        // Every transfer step's non-success response, then the final missing
+        // confirmation message. Headers contain a secret to catch Debug(Response).
+        for fail_at in 0..=8 {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let mut replies = vec![
+                    response("302 Found", "Location: /compte/cav/SENTINEL_USER/virements/immediat/nouveau/SENTINEL_TOKEN/1\r\n", ""),
+                    ok(r#"<input name="flow_ImmediateCashTransfer_instance" value="SENTINEL_STATE">"#),
+                    ok(""), ok(""), ok(""), ok(""), ok(""), ok("Confirmation"),
+                ];
+                    let count = if fail_at < 8 {
+                        replies.truncate(fail_at + 1);
+                        replies[fail_at] = response(
+                            "503 Unavailable",
+                            "Set-Cookie: session=SENTINEL_TOKEN\r\n",
+                            "SENTINEL_BODY",
+                        );
+                        fail_at + 1
+                    } else {
+                        replies[7] = ok("SENTINEL_BODY");
+                        8
+                    };
+                    let server = Server::new(replies);
+                    let client = fixture_client(server.address);
+                    let account = crate::account::Account {
+                        id: "SENTINEL_USER".into(),
+                        ..Default::default()
+                    };
+                    let results: Vec<_> = client
+                        .transfer_funds(
+                            12.0,
+                            account.clone(),
+                            account,
+                            Some("SENTINEL_BODY".into()),
+                        )
+                        .collect()
+                        .await;
+                    if fail_at == 8 {
+                        assert!(matches!(
+                            results.last().unwrap(),
+                            Ok(crate::client::transfer::TransferProgress::SubmittedUnverified)
+                        ));
+                    } else {
+                        let error = results.last().unwrap().as_ref().unwrap_err();
+                        assert_clean(Some(error), "", LOG_SECRETS);
+                    }
+                    assert_eq!(server.finish().len(), count);
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+    }
+}
+
+#[test]
+fn logging_order_quote_response_diagnostics_and_success() {
+    use super::{
+        logging_tests::{assert_clean, capture},
+        trade::order::{OrderCheckResponse, OrderConfirmResponse, OrderPrepareResponse, OrderSide},
+    };
+    let mut prepare = OrderPrepareResponse {
+        resource_id: "SENTINEL_TOKEN".into(),
+        performance_url: "https://fixture.invalid/SENTINEL_TOKEN".into(),
+        ..Default::default()
+    };
+    prepare.account.iban = "SENTINEL_USER".into();
+    let prepare = serde_json::to_string(&prepare).unwrap();
+    let mut check_value = serde_json::to_value(OrderCheckResponse::default()).unwrap();
+    check_value["checkOrderData"]["orderSide"] = serde_json::json!("B");
+    check_value["checkOrderData"]["orderQuantity"] = serde_json::json!(2);
+    check_value["checkOrderData"]["orderPriceLimit"] = serde_json::json!(0.0);
+    let check = serde_json::to_string(&check_value).unwrap();
+    let confirm = serde_json::to_string(&OrderConfirmResponse {
+        order_id: "SENTINEL_USER".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    for enabled in [true, false] {
+        for fail_at in 0..=3 {
+            for malformed in [false, true] {
+                let (_, logs) = capture(enabled, || {
+                    run(async {
+                        let mut replies = vec![
+                            ok(&prepare),
+                            ok(&check),
+                            response("201 Created", "", &confirm),
+                        ];
+                        if fail_at < 3 {
+                            replies.truncate(fail_at + 1);
+                            replies[fail_at] = if malformed {
+                                response(
+                                    if fail_at == 2 {
+                                        "201 Created"
+                                    } else {
+                                        "200 OK"
+                                    },
+                                    "",
+                                    r#""SENTINEL_BODY""#,
+                                )
+                            } else {
+                                response("503 Unavailable", "", "SENTINEL_BODY")
+                            };
+                        }
+                        let count = replies.len();
+                        let server = Server::new(replies);
+                        let mut client = fixture_client(server.address);
+                        client.config = logging_config();
+                        let account = crate::account::Account {
+                            id: "SENTINEL_USER".into(),
+                            ..Default::default()
+                        };
+                        let result = client
+                            .order(OrderSide::Buy, &account, "TEST", 2, None)
+                            .await;
+                        assert_eq!(result.is_ok(), fail_at == 3);
+                        assert_clean(result.as_ref().err(), "", LOG_SECRETS);
+                        assert_eq!(server.finish().len(), count);
+                    })
+                });
+                assert_clean(None, &logs, LOG_SECRETS);
+            }
+        }
+        for reply in [
+            ok("{}"),
+            ok(r#""SENTINEL_BODY""#),
+            response("503 Unavailable", "", "SENTINEL_BODY"),
+            Reply::Close,
+        ] {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let server = Server::new(vec![reply]);
+                    let mut client = fixture_client(server.address);
+                    client.config = logging_config();
+                    let result = client.instrument_quote("TEST").await;
+                    assert_clean(result.as_ref().err(), "", LOG_SECRETS);
+                    server.finish();
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+        for reply in [
+            ok("SENTINEL_BODY"),
+            response("503 Unavailable", "", "SENTINEL_BODY"),
+            Reply::Close,
+        ] {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let server = Server::new(vec![reply]);
+                    let mut client = fixture_client(server.address);
+                    client.config = logging_config();
+                    let result = client
+                        .cancel_order(&crate::account::Account::default(), "SENTINEL_USER")
+                        .await;
+                    assert_clean(result.as_ref().err(), "", LOG_SECRETS);
+                    server.finish();
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+    }
+}
+
+#[test]
+fn logging_session_login_and_empty_export_success() {
+    use super::logging_tests::{assert_clean, capture};
+    let mut config = logging_config();
+    config.app_release_date = "SENTINEL_BODY".into();
+    let config = serde_json::to_string(&config).unwrap();
+    for enabled in [true, false] {
+        let (_, logs) = capture(enabled, || {
+            run(async {
+                let server = Server::new(vec![
+                    ok("__brs_mit=SENTINEL_TOKEN;"),
+                    ok(&format!(
+                        r#"<input name="form[_token]" value="SENTINEL_TOKEN" > window.BRS_CONFIG = {config};"#
+                    )),
+                    ok(
+                        &super::newpad_tests::keyboard(&super::newpad_tests::entries())
+                            .replace("fixture-challenge", "SENTINEL_TOKEN"),
+                    ),
+                ]);
+                fixture_client(server.address).init_session().await.unwrap();
+                assert_eq!(server.finish().len(), 3);
+                let server = Server::new(vec![
+                    response("302 Found", "", ""),
+                    ok(&format!(
+                        r#"href="/se-deconnecter" window.BRS_CONFIG = {config};"#
+                    )),
+                ]);
+                let mut client = fixture_client(server.address);
+                client.virtual_pad_ids = super::newpad_tests::entries()
+                    .into_iter()
+                    .map(|entry| entry.0)
+                    .collect();
+                client.login("SENTINEL_USER", "12345678").await.unwrap();
+                assert_eq!(server.finish().len(), 2);
+                let server = Server::new(vec![
+                    ok(r#"<input name="movementSearch[_token]" value="SENTINEL_TOKEN">"#),
+                    ok(
+                        "dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n",
+                    ),
+                ]);
+                let result = fixture_client(server.address)
+                    .get_transactions("SENTINEL_USER", "01/01/2026", "02/01/2026")
+                    .await
+                    .unwrap();
+                assert!(result.is_empty());
+                assert_eq!(server.finish().len(), 2);
+            })
+        });
+        assert_clean(None, &logs, LOG_SECRETS);
+    }
+}
+
+#[test]
+fn export_rejects_status_and_unverified_empty_bodies() {
+    let dir = std::env::temp_dir().join(format!("bourso-http-export-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let destination = dir.join("old.csv");
+    std::fs::write(&destination, b"previous export").unwrap();
+    for reply in [
+        response("401 Unauthorized", "", ""),
+        response("403 Forbidden", "", "dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n"),
+        response("500 Error", "", ""),
+        ok(""),
+        ok(r#"<html><input name="movementSearch[_token]" value="fixture">"#),
+        ok(" \n<HTML><form name=login>expired</form>"),
+    ] {
+        run(async {
+            let server = Server::new(vec![ok(r#"<input name="movementSearch[_token]" value="fixture">"#), reply]);
+            let result = fixture_client(server.address).get_transactions("fake", "01/01/2026", "02/01/2026").await
+                .and_then(|transactions| super::transaction::transactions_to_csv(&transactions))
+                .and_then(|csv| super::transaction::write_export_atomically(&destination, csv.as_bytes()));
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
+            assert_eq!(server.finish().len(), 2);
+        });
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn export_rejects_external_redirect_before_sending() {
+    for location in [
+        "http://clients.boursobank.com/fixture",
+        "https://outside.invalid/fixture",
+        "//outside.invalid/fixture",
+        "https://clients.boursobank.com:444/fixture",
+        "https://clients.boursobank.com@outside.invalid/fixture",
+    ] {
+        run(async {
+            let server = Server::new(vec![
+                ok(r#"<input name="movementSearch[_token]" value="fixture">"#),
+                response("302 Found", &format!("Location: {location}\r\n"), ""),
+                ok("dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n"),
+            ]);
+            let result = fixture_client(server.address)
+                .get_transactions("fake", "01/01/2026", "02/01/2026")
+                .await;
+            assert!(result.is_err());
+            // Drop stops the server even though the sentinel third response must
+            // never be consumed. finish waits for all scripted responses.
+            server.stop.store(true, Ordering::Relaxed);
+            assert_eq!(server.finish().len(), 2);
+        });
+    }
+}
+
+#[test]
+fn export_form_status_missing_redirect_and_redirect_error_rejected() {
+    run(async {
+        for status in ["401 Unauthorized", "403 Forbidden", "500 Error"] {
+            let server = Server::new(vec![response(
+                status,
+                "",
+                r#"<input name="movementSearch[_token]" value="fixture">"#,
+            )]);
+            assert!(fixture_client(server.address)
+                .get_transactions("fake", "01/01/2026", "02/01/2026")
+                .await
+                .is_err());
+            assert_eq!(server.finish().len(), 1);
+        }
+        for headers in ["", "Location: \r\n", "Location: https://[invalid\r\n"] {
+            let server = Server::new(vec![
+                ok(r#"<input name="movementSearch[_token]" value="fixture">"#),
+                response("302 Found", headers, ""),
+            ]);
+            assert!(fixture_client(server.address)
+                .get_transactions("fake", "01/01/2026", "02/01/2026")
+                .await
+                .is_err());
+            assert_eq!(server.finish().len(), 2);
+        }
+        let server = Server::new(vec![ok(r#"<input name="movementSearch[_token]" value="fixture">"#), response("302 Found", "Location: /download.csv\r\n", ""), response("500 Error", "", "dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n")]);
+        assert!(fixture_client(server.address)
+            .get_transactions("fake", "01/01/2026", "02/01/2026")
+            .await
+            .is_err());
+        assert_eq!(server.finish().len(), 3);
+    });
+}
+
+#[test]
+fn export_only_verified_header_means_empty_including_bom() {
+    for prefix in ["", "\u{feff}"] {
+        run(async {
+            let body = format!("{prefix}dateOp;dateVal;label;category;categoryParent;supplierFound;amount;comment;accountNum;accountLabel;accountbalance\n");
+            let server = Server::new(vec![
+                ok(r#"<input name="movementSearch[_token]" value="fixture">"#),
+                ok(&body),
+            ]);
+            assert!(fixture_client(server.address)
+                .get_transactions("fake", "01/01/2026", "02/01/2026")
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(server.finish().len(), 2);
+        });
+    }
+}
