@@ -120,10 +120,13 @@ Other local state and credential directories are left untouched.
 
 ### Interrupted process / stale lock
 
-Ordinary exit and catchable signals release this invocation's empty lock; the
-attempt journal remains. SIGKILL or machine failure may leave `lock/`. **There
-is no PID-based stale detection or automatic lock deletion.** A foreground child
-may outlive an interrupted supervisor. Before any manual recovery, establish
+Ordinary observed exit releases this invocation's empty lock; the attempt journal
+remains. TERM/INT/HUP forward TERM to the direct child and retain `lock/`
+conservatively; SIGKILL or machine failure may also leave it. **There is no
+PID-based stale detection or automatic lock deletion.** The wrapper waits on its
+actual child with inherited stdin; a TERM-resistant child or descendants may
+outlive an interrupted supervisor. Cancellation is best-effort, not process-tree
+termination or proof of bank outcome. Before any manual recovery, establish
 that no wrapper or child can still submit work and inspect the bank independently.
 A PID's absence alone is insufficient financial evidence.
 

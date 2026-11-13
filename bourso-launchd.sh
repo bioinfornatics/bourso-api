@@ -72,12 +72,28 @@ lock="$DCA_STATE_DIR/lock"
 if ! mkdir "$lock" 2>/dev/null; then
     blocked 'Lock present: active or interrupted run. Never auto-remove it; inspect processes and reconcile with the bank first.'
 fi
-# Only our empty lock is removed. SIGKILL/power loss may leave it in place.
-cleanup() { rmdir "$lock" 2>/dev/null || :; }
+# An interrupted run keeps its lock, even if its child later exits. There is no
+# automatic stale recovery: cancellation cannot establish a bank outcome.
+keep_lock=false
+child_pid=
+cleanup() {
+    if [ "$keep_lock" = false ]; then rmdir "$lock" 2>/dev/null || :; fi
+}
+interrupt() {
+    # Ignore repeated cancellation while forwarding; never escalate or retry.
+    trap '' INT TERM HUP
+    keep_lock=true
+    if [ -n "$child_pid" ]; then
+        # Normalize cancellation to TERM: asynchronous children can inherit
+        # SIGINT ignored from Bash. A child may ignore TERM too; retain the lock.
+        kill -TERM "$child_pid" 2>/dev/null || :
+    fi
+    exit "$1"
+}
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+trap 'interrupt 130' INT
+trap 'interrupt 143' TERM
+trap 'interrupt 129' HUP
 attempt="$DCA_STATE_DIR/attempt"
 confirmed="$DCA_STATE_DIR/last_operator_confirmed"
 for file in "$attempt" "$confirmed"; do
@@ -157,10 +173,18 @@ id="$(date +%s).$$"
 started=$now
 printf 'id=%s\nstate=unknown\nstarted_at=%s\nexit_status=not-observed\n' "$id" "$started" | atomic_write "$attempt"
 printf 'Starting attempt %s (%s); bank outcome will remain unverified.\n' "$id" "$mode" >&2
-# Foreground invocation inherits stdin/stdout/stderr and directly observes the
-# actual child exit. No eval, shell-assembled command, Terminal or secret logging.
+# Explicit stdin preserves interactive prompts (Bash otherwise redirects an
+# asynchronous command's stdin). Waiting on the actual child keeps this wrapper
+# synchronous, but unlike a foreground external command, wait responds to traps.
+# Keep the lock from BEFORE launch through wait, including the PID-assignment
+# window: if interrupted there, manual recovery must inspect the live child.
+keep_lock=true
+"$SCRIPT_PATH" "${args[@]}" <&0 &
+child_pid=$!
 status=0
-"$SCRIPT_PATH" "${args[@]}" || status=$?
+wait "$child_pid" || status=$?
+child_pid=
+keep_lock=false
 state=unknown
 [ "$status" -ne 0 ] || state=submitted-unverified
 printf 'id=%s\nstate=%s\nstarted_at=%s\nexit_status=%s\nobserved_at=%s\n' "$id" "$state" "$started" "$status" "$(date +%s)" | atomic_write "$attempt"
