@@ -49,6 +49,8 @@ enum Reply {
     Http(String),
     Hold,
     Close,
+    /// Keep accepting after the script to detect retries, even after cancellation.
+    ObserveQuiet(Duration),
 }
 
 fn response(status: &str, headers: &str, body: &str) -> Reply {
@@ -66,6 +68,7 @@ fn ok(body: &str) -> Reply {
 enum Event {
     Request(String),
     Disconnected,
+    QuietObserved,
 }
 
 /// Small scripted HTTP/1 fixture. Every accept/read/write has a deadline;
@@ -88,6 +91,20 @@ impl Server {
         let worker = thread::spawn(move || {
             let mut requests = Vec::new();
             for reply in replies {
+                if let Reply::ObserveQuiet(window) = reply {
+                    let deadline = Instant::now() + window;
+                    while !stopped.load(Ordering::Relaxed) && Instant::now() < deadline {
+                        match listener.accept() {
+                            Ok(_) => panic!("unexpected extra connection after final submission"),
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(e) => panic!("fixture quiet observation: {e}"),
+                        }
+                    }
+                    let _ = sender.send(Event::QuietObserved);
+                    continue;
+                }
                 let deadline = Instant::now() + BOUND;
                 let mut stream = loop {
                     if stopped.load(Ordering::Relaxed) {
@@ -115,6 +132,7 @@ impl Server {
                 match reply {
                     Reply::Http(response) => stream.write_all(response.as_bytes()).unwrap(),
                     Reply::Close => (),
+                    Reply::ObserveQuiet(_) => unreachable!(),
                     Reply::Hold => {
                         let deadline = Instant::now() + BOUND;
                         let mut byte = [0];
@@ -981,5 +999,323 @@ fn export_only_verified_header_means_empty_including_bom() {
                 .is_empty());
             assert_eq!(server.finish().len(), 2);
         });
+    }
+}
+
+// PUBLICUNKNOWN1-3: traverse the public workflows, not private final-step helpers.
+// These synthetic responses establish transport behavior, never bank execution.
+const SUBMISSION_QUIET_WINDOW: Duration = Duration::from_millis(150);
+
+#[derive(Clone, Copy, Debug)]
+enum PublicSubmission {
+    Order,
+    OrderDetailed,
+    TransferFunds,
+    TransferMoney,
+}
+
+impl PublicSubmission {
+    fn operation(self) -> crate::outcome::OutcomeOperation {
+        use crate::outcome::OutcomeOperation;
+        match self {
+            Self::Order | Self::OrderDetailed => OutcomeOperation::Order,
+            Self::TransferFunds | Self::TransferMoney => OutcomeOperation::Transfer,
+        }
+    }
+
+    fn prefix(self) -> Vec<Reply> {
+        use super::trade::order::{OrderCheckResponse, OrderPrepareResponse};
+        match self {
+            Self::Order | Self::OrderDetailed => {
+                let prepare = OrderPrepareResponse {
+                    resource_id: "SENTINEL_TOKEN".into(),
+                    ..Default::default()
+                };
+                let mut check = serde_json::to_value(OrderCheckResponse::default()).unwrap();
+                check["checkOrderData"]["orderSide"] = serde_json::json!("B");
+                check["checkOrderData"]["orderQuantity"] = serde_json::json!(2);
+                check["checkOrderData"]["orderPriceLimit"] = serde_json::json!(0.0);
+                vec![ok(&serde_json::to_string(&prepare).unwrap()), ok(&check.to_string())]
+            }
+            Self::TransferFunds | Self::TransferMoney => vec![
+                response("302 Found", "Location: /compte/cav/SENTINEL_USER/virements/immediat/nouveau/SENTINEL_TOKEN/1\r\n", ""),
+                ok(r#"<input name="flow_ImmediateCashTransfer_instance" value="SENTINEL_STATE">"#),
+                ok(""), ok(""), ok(""), ok(""), ok(""),
+            ],
+        }
+    }
+
+    fn request_lines(self) -> Vec<String> {
+        match self {
+            Self::Order | Self::OrderDetailed => vec![
+                "GET /api/_user_/_SENTINEL_USER_/trading/order/prepare?_host=tradingboard.boursobank.com&searchExtendedHours=false&selectedAccount=SENTINEL_USER&symbol=TEST HTTP/1.1".into(),
+                "POST /api/_user_/_SENTINEL_USER_/trading/ordersimple/check HTTP/1.1".into(),
+                "POST /api/_user_/_SENTINEL_USER_/trading/ordersimple/confirm HTTP/1.1".into(),
+            ],
+            Self::TransferFunds | Self::TransferMoney => {
+                let base = "/compte/cav/SENTINEL_USER/virements/immediat/nouveau";
+                let mut lines = vec![format!("GET {base} HTTP/1.1")];
+                for (method, step) in [("GET", 1), ("POST", 2), ("POST", 3), ("POST", 4), ("POST", 5), ("POST", 8), ("POST", 10)] {
+                    lines.push(format!("{method} {base}/SENTINEL_TOKEN/{step} HTTP/1.1"));
+                }
+                lines
+            }
+        }
+    }
+
+    // This future owns any stream it drives. Dropping it drops the stream itself,
+    // not merely a next() future borrowing an otherwise-live stream.
+    async fn submit(self, client: &BoursoWebClient) -> anyhow::Result<()> {
+        use super::{trade::order::OrderSide, transfer::TransferProgress};
+        use futures_util::{Stream, StreamExt};
+        let account = crate::account::Account {
+            id: "SENTINEL_USER".into(),
+            ..Default::default()
+        };
+        match self {
+            Self::Order => client
+                .order(OrderSide::Buy, &account, "TEST", 2, None)
+                .await
+                .map(|_| ()),
+            Self::OrderDetailed => client
+                .order_detailed(OrderSide::Buy, &account, "TEST", 2, None)
+                .await
+                .map(|_| ()),
+            Self::TransferFunds | Self::TransferMoney => {
+                let mut stream: std::pin::Pin<
+                    Box<dyn Stream<Item = anyhow::Result<TransferProgress>> + '_>,
+                > = match self {
+                    Self::TransferFunds => Box::pin(client.transfer_funds(
+                        12.0,
+                        account.clone(),
+                        account,
+                        Some("SENTINEL_BODY".into()),
+                    )),
+                    Self::TransferMoney => Box::pin(client.transfer_money(
+                        "12.00".parse().unwrap(),
+                        account.clone(),
+                        account,
+                        Some("SENTINEL_BODY".into()),
+                    )),
+                    _ => unreachable!(),
+                };
+                let mut steps = Vec::new();
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(progress) => {
+                            // No SubmittedUnverified or legacy Completed is allowed
+                            // on these final-failure/cancellation paths.
+                            assert!(
+                                progress.step_number() < 10,
+                                "unexpected terminal success: {progress:?}"
+                            );
+                            steps.push(progress.step_number());
+                        }
+                        Err(error) => {
+                            assert_eq!(steps, (1..=9).collect::<Vec<_>>());
+                            assert!(
+                                stream.next().await.is_none(),
+                                "one error then exhaustion required"
+                            );
+                            return Err(error);
+                        }
+                    }
+                }
+                panic!("transfer exhausted without its expected final error")
+            }
+        }
+    }
+
+    fn assert_requests(self, requests: &[String]) {
+        let expected = self.request_lines();
+        let actual: Vec<_> = requests
+            .iter()
+            .map(|request| request.lines().next().unwrap())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "full public request sequence for {self:?}"
+        );
+        assert_eq!(
+            actual
+                .iter()
+                .filter(|line| **line == expected.last().unwrap())
+                .count(),
+            1,
+            "exactly one final POST"
+        );
+        for request in requests {
+            let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+            if headers.starts_with("POST ") {
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                assert_eq!(body.len(), length, "recorded POST must be complete");
+                assert!(length > 0);
+            }
+        }
+        let body = requests.last().unwrap().split_once("\r\n\r\n").unwrap().1;
+        match self {
+            Self::Order | Self::OrderDetailed => assert_eq!(
+                serde_json::from_str::<serde_json::Value>(body).unwrap(),
+                serde_json::json!({"resourceId": "SENTINEL_TOKEN"})
+            ),
+            Self::TransferFunds | Self::TransferMoney => {
+                assert!(body.contains(
+                    "name=\"flow_ImmediateCashTransfer_instance\"\r\n\r\nSENTINEL_STATE\r\n"
+                ));
+                assert!(body.contains("name=\"flow_ImmediateCashTransfer_step\"\r\n\r\n9\r\n"));
+                assert!(
+                    body.ends_with("--\r\n"),
+                    "complete multipart closing boundary"
+                );
+            }
+        }
+    }
+}
+
+fn public_submission_failures(api: PublicSubmission) {
+    use super::logging_tests::{assert_clean, capture};
+    use crate::outcome::{OutcomeStage, OutcomeUnknown};
+    for enabled in [true, false] {
+        let status = if api.operation() == crate::outcome::OutcomeOperation::Order {
+            "201 Created"
+        } else {
+            "200 OK"
+        };
+        let mut cases = vec![
+            (Reply::Close, OutcomeStage::Sending),
+            (Reply::Http(format!("HTTP/1.1 {status}\r\nContent-Length: 999\r\nConnection: close\r\n\r\nSENTINEL_BODY")), OutcomeStage::ReadingResponse),
+            (response("503 Unavailable", "Set-Cookie: session=SENTINEL_TOKEN\r\n", "SENTINEL_BODY"), OutcomeStage::HttpStatus),
+        ];
+        if api.operation() == crate::outcome::OutcomeOperation::Order {
+            cases.push((
+                response("201 Created", "", r#"{"secret":"SENTINEL_BODY",invalid}"#),
+                OutcomeStage::ParsingResponse,
+            ));
+        }
+        for (reply, stage) in cases {
+            let (_, logs) = capture(enabled, || {
+                run(async {
+                    let mut replies = api.prefix();
+                    replies.extend([reply, Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+                    let server = Server::new(replies);
+                    let mut client = fixture_client(server.address);
+                    client.config = logging_config();
+                    let error = api.submit(&client).await.unwrap_err();
+                    let assert_unknown = |error: &anyhow::Error| {
+                        let unknown = error
+                            .downcast_ref::<OutcomeUnknown>()
+                            .expect("typed outcome survives public wrapper and caller context");
+                        assert_eq!(unknown.operation, api.operation());
+                        assert_eq!(unknown.stage, stage);
+                        assert_eq!(unknown.reference(), "SENTINEL_TOKEN");
+                        assert_eq!(unknown.correlation.len(), 32);
+                        assert!(unknown
+                            .correlation
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit()));
+                        assert!(
+                            format!("{error:#}").contains("Do not reissue or retry automatically")
+                        );
+                        assert_clean(Some(error), "", LOG_SECRETS);
+                        assert_clean(
+                            None,
+                            &format!("{unknown} {unknown:#} {unknown:?} {unknown:#?}"),
+                            LOG_SECRETS,
+                        );
+                    };
+                    assert_unknown(&error);
+                    assert_unknown(&error.context("public submission caller context"));
+                    // Keep the runtime polling until the server's bounded quiet
+                    // window ends, rather than blocking it in worker.join().
+                    let mut server = server;
+                    for _ in api.request_lines() {
+                        assert!(matches!(server.event().await, Event::Request(_)));
+                    }
+                    assert!(matches!(server.event().await, Event::QuietObserved));
+                    api.assert_requests(&server.finish());
+                })
+            });
+            assert_clean(None, &logs, LOG_SECRETS);
+        }
+    }
+}
+
+#[test]
+fn public_order_final_failures_are_unknown_without_retry() {
+    public_submission_failures(PublicSubmission::Order);
+}
+
+#[test]
+fn public_order_detailed_final_failures_are_unknown_without_retry() {
+    public_submission_failures(PublicSubmission::OrderDetailed);
+}
+
+#[test]
+fn public_transfer_funds_final_failures_are_unknown_then_exhausted() {
+    public_submission_failures(PublicSubmission::TransferFunds);
+}
+
+#[test]
+fn public_transfer_money_final_failures_are_unknown_then_exhausted() {
+    public_submission_failures(PublicSubmission::TransferMoney);
+}
+
+fn cancel_public_submission_after_complete_final_post(api: PublicSubmission) {
+    run(async {
+        let mut replies = api.prefix();
+        replies.extend([Reply::Hold, Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+        let mut server = Server::new(replies);
+        let mut client = fixture_client(server.address);
+        client.config = logging_config();
+        let mut pending = Box::pin(api.submit(&client));
+        let mut observed = Vec::new();
+        for expected in api.request_lines() {
+            match futures_util::future::select(Box::pin(server.event()), pending).await {
+                futures_util::future::Either::Left((Event::Request(request), still_pending)) => {
+                    assert_eq!(request.lines().next().unwrap(), expected);
+                    observed.push(request);
+                    pending = still_pending;
+                }
+                _ => panic!("held public submission completed before owning future/stream drop"),
+            }
+        }
+        // Event::Request is sent only after read_request receives Content-Length
+        // bytes. Confirm the final payload before actually cancelling the owner.
+        api.assert_requests(&observed);
+        drop(pending);
+        // This is shorter than the client's two-second request timeout: a
+        // forgotten owner must not pass merely by eventually timing out.
+        let disconnected = tokio::time::timeout(Duration::from_millis(500), server.event())
+            .await
+            .expect("owner drop must disconnect before the request timeout");
+        assert!(matches!(disconnected, Event::Disconnected));
+        assert!(matches!(server.event().await, Event::QuietObserved));
+        api.assert_requests(&server.finish());
+        // The quiet listener stays alive for 150 ms after disconnect, so a retry
+        // would fail this test rather than merely meet a closed listening socket.
+    });
+}
+
+#[test]
+fn dropping_public_order_owner_after_final_post_disconnects_without_retry() {
+    for api in [PublicSubmission::Order, PublicSubmission::OrderDetailed] {
+        cancel_public_submission_after_complete_final_post(api);
+    }
+}
+
+#[test]
+fn dropping_public_transfer_owner_after_final_post_disconnects_without_retry() {
+    for api in [
+        PublicSubmission::TransferFunds,
+        PublicSubmission::TransferMoney,
+    ] {
+        cancel_public_submission_after_complete_final_post(api);
     }
 }

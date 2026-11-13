@@ -122,6 +122,7 @@ impl BoursoWebClient {
         let transfer_id = location
             .split('/')
             .nth(7)
+            .filter(|id| !id.is_empty())
             .context("Failed to extract transfer id")?
             .to_string();
 
@@ -720,3 +721,6 @@ mod reason_tests {
 
 #[cfg(test)]
 mod submission_tests;
+
+#[cfg(test)]
+mod init_tests;
