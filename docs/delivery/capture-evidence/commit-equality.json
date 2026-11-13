@@ -1,0 +1,10 @@
+{
+  "status": "SAME_INPUT_CONTENT_ENVIRONMENT",
+  "proof_candidate": "152d1a3396fa5535143de94e2bc9cd22fc3c77f8256eef2157c87dc2915d6ef8",
+  "post_source_commit_candidate": "59a81ae595d69ac60b3736b1fa528fc925b259c10c0551b5af0045d421f3dc59",
+  "changed_fields": [
+    "git",
+    "candidate_id"
+  ],
+  "claim": "Precommit evidence retains original candidate identity."
+}
