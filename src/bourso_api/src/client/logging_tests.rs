@@ -59,10 +59,22 @@ pub(super) fn capture<T>(enabled: bool, action: impl FnOnce() -> T) -> (T, Strin
         buffer: buffer.clone(),
         enabled,
     };
-    let result = tracing::subscriber::with_default(subscriber, || {
+    // tracing-core 0.1.33's single-dispatcher cold-callsite path consults the
+    // registering thread's default, which may be NoSubscriber on another thread.
+    // Keep two DISTINCT registered dispatchers alive through action(): a clone of
+    // the same Dispatch does not register twice. The inert one never captures or
+    // raises the level hint; it is not installed as a thread/global subscriber.
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let inert = tracing::Dispatch::new(Capture {
+        buffer: Buffer::default(),
+        enabled: false,
+    });
+    let result = tracing::dispatcher::with_default(&dispatch, || {
         tracing::trace!("capture-probe");
         action()
     });
+    drop(inert);
+    drop(dispatch);
     let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
     assert_eq!(
         text.contains("capture-probe"),
@@ -149,6 +161,87 @@ fn logging_password_and_svg_errors_do_not_echo_input() {
         });
         assert_clean(Some(&result.unwrap_err()), &logs, &["SENTINEL_SVG"]);
     }
+}
+
+#[test]
+fn capture_cold_callsite_from_uncaptured_thread() {
+    // Run exactly one test in a new process: other tests' dispatchers/callsites
+    // would hide the single-dispatcher cold-registration condition.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "client::logging_tests::capture_cold_callsite_child",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated capture regression failed: {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+#[ignore = "fresh-process child; invoked by capture_cold_callsite_from_uncaptured_thread"]
+fn capture_cold_callsite_child() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn emit(attempts: &AtomicUsize, phase: usize) {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        tracing::debug!("capture-cold-target phase={phase}");
+    }
+
+    let root = std::thread::current().id();
+    let attempts = AtomicUsize::new(0);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (_, logs) = capture(true, || {
+        runtime.block_on(async {
+            assert_eq!(root, std::thread::current().id());
+            assert_eq!(
+                tracing::level_filters::LevelFilter::current(),
+                tracing::level_filters::LevelFilter::TRACE
+            );
+            tracing::debug!("capture-cold-control-before");
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        tracing::dispatcher::get_default(|dispatch| {
+                            assert!(dispatch.is::<tracing::subscriber::NoSubscriber>());
+                        });
+                        emit(&attempts, 1);
+                    })
+                    .join()
+                    .unwrap();
+            });
+            tokio::task::yield_now().await;
+            assert_eq!(root, std::thread::current().id());
+            emit(&attempts, 2);
+            tracing::debug!("capture-cold-control-after");
+            eprintln!(
+                "root={root:?} resumed={:?} max={:?} attempts={}",
+                std::thread::current().id(),
+                tracing::level_filters::LevelFilter::current(),
+                attempts.load(Ordering::SeqCst)
+            );
+        });
+    });
+    eprintln!("CAPTURED\n{logs}END_CAPTURED");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert!(logs.contains("capture-cold-control-before"));
+    assert!(logs.contains("capture-cold-control-after"));
+    assert!(!logs.contains("capture-cold-target phase=1"));
+    assert_eq!(
+        logs.matches("capture-cold-target phase=2").count(),
+        1,
+        "ON capture must deliver after first registration on an uncaptured thread"
+    );
 }
 
 #[test]
