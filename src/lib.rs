@@ -13,6 +13,7 @@ use futures_util::{pin_mut, StreamExt};
 use tracing::{debug, info, warn};
 
 pub mod account_filters;
+pub mod financial_guard;
 mod mfa;
 pub mod money;
 pub mod qrcode;
@@ -51,6 +52,11 @@ where
     Fut: std::future::Future<Output = Result<GetTicksEOD>>,
     B: FnOnce() -> Result<BoursoWebClient>,
 {
+    if let Some(("financial-review", review)) = matches.subcommand() {
+        return financial_guard::review(review);
+    }
+    let financial = matches!(matches.subcommand_name(), Some("trade" | "transfer"));
+
     // Validate even caller-built ArgMatches before settings, credentials or network.
     let transfer_amount = matches
         .subcommand_matches("transfer")
@@ -160,6 +166,12 @@ where
         "Missing customer id. Please configure it with `bourso config --username <customer_id>`",
     )?;
 
+    let session = if financial {
+        Some(financial_guard::Session::open()?)
+    } else {
+        None
+    };
+
     info!("Authenticating with the configured customer id");
     info!("If you want to change it, run `bourso config --username <customer_id>`");
     println!();
@@ -183,6 +195,9 @@ where
         Err(e) => match e.downcast_ref() {
             Some(bourso_api::client::error::ClientError::MfaRequired) => {
                 warn!("An MFA is required.");
+                if financial {
+                    println!("Authentication requires device approval; open the bank app. No financial API invoked yet.");
+                }
 
                 mfa::within_deadline(mfa::VALIDATION_TIMEOUT, async {
                     let (otp_id, form_state, token, mfa_type) = web_client.request_mfa().await?;
@@ -203,7 +218,9 @@ where
                 info!("MFA successful ✅");
             }
             _ => {
-                debug!("{:#?}", e);
+                if !financial {
+                    debug!("{:#?}", e);
+                }
                 return Err(e);
             }
         },
@@ -302,9 +319,23 @@ where
                                 .map(|s| s.as_str())
                                 .unwrap();
 
-                            let _ = web_client
-                                .order(side.to_owned(), account, symbol, quantity.to_owned(), None)
-                                .await?;
+                            let report = session
+                                .as_ref()
+                                .context("Missing financial guard")?
+                                .invoke(financial_guard::Operation::Order, || async {
+                                    web_client
+                                        .order_detailed(
+                                            side.to_owned(),
+                                            account,
+                                            symbol,
+                                            *quantity,
+                                            None,
+                                        )
+                                        .await?;
+                                    Ok(())
+                                })
+                                .await;
+                            return Err(report.into());
                         }
                         _ => unreachable!(),
                     }
@@ -341,50 +372,27 @@ where
                 .find(|a| a.id == to_account_id)
                 .context("To account not found. Are you sure you have access to it? Run `bourso accounts` to list your accounts")?;
 
-            let stream = web_client.transfer_money(
-                amount,
-                from_account.clone(),
-                to_account.clone(),
-                reason.map(|s| s.to_string()),
-            );
-
-            pin_mut!(stream);
-
-            // 100% means the local submission process ended, not bank execution.
-            let mut submission_warning = None;
-            while let Some(progress_result) = stream.next().await {
-                let progress = progress_result?;
-                submission_warning = progress.submission_warning();
-                let step = progress.step_number();
-                let total = TransferProgress::total_steps();
-                let percentage = (step as f32 / total as f32 * 100.0) as u8;
-
-                // Create a simple progress bar
-                let bar_length = 30;
-                let filled = (bar_length as f32 * step as f32 / total as f32) as usize;
-                let bar: String = "█".repeat(filled) + &"░".repeat(bar_length - filled);
-
-                // Use ANSI escape code to clear the line before printing
-                // \x1B[2K clears the entire line, \r returns cursor to start
-                print!(
-                    "\x1B[2K\r[{}] {:3}% - {}/{} - {}",
-                    bar,
-                    percentage,
-                    step,
-                    total,
-                    progress.description()
-                );
-                use std::io::Write;
-                std::io::stdout().flush().unwrap();
-            }
-            println!(); // New line after progress is complete
-
-            warn!(
-                "{}",
-                submission_warning.unwrap_or(
-                    "Transfer execution unverified: no final submission status received. Verify in the bank before retrying; do not resubmit automatically."
-                )
-            );
+            let report = session
+                .as_ref()
+                .context("Missing financial guard")?
+                .invoke(financial_guard::Operation::Transfer, || async {
+                    let stream = web_client.transfer_money(
+                        amount,
+                        from_account.clone(),
+                        to_account.clone(),
+                        reason.map(str::to_owned),
+                    );
+                    pin_mut!(stream);
+                    let mut terminal_response = false;
+                    while let Some(progress) = stream.next().await {
+                        terminal_response =
+                            matches!(progress?, TransferProgress::SubmittedUnverified);
+                    }
+                    anyhow::ensure!(terminal_response, "No terminal transfer response");
+                    Ok(())
+                })
+                .await;
+            return Err(report.into());
         }
 
         _ => unreachable!(),

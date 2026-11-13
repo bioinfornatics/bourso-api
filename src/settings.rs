@@ -37,7 +37,7 @@ use std::{
 
 // Resolve before consulting UserDirs: HOME does not override Windows Known Folders.
 // The existing managed-directory/file routines validate and protect the result.
-fn storage_directory() -> Result<PathBuf> {
+pub(crate) fn storage_directory() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("BOURSO_DATA_DIR") {
         return validate_storage_override(Path::new(&path));
     }
@@ -142,7 +142,7 @@ fn unsafe_entry() -> io::Error {
     )
 }
 
-fn private_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -210,7 +210,7 @@ fn private_mode(file: &fs::File) -> io::Result<()> {
     Ok(())
 }
 
-fn create_private_file(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn create_private_file(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true).write(true).create_new(true);
     #[cfg(unix)]
@@ -224,7 +224,7 @@ fn create_private_file(path: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
-fn open_existing_regular(path: &Path, managed: bool) -> io::Result<fs::File> {
+pub(crate) fn open_existing_regular(path: &Path, managed: bool) -> io::Result<fs::File> {
     regular_metadata(path)?;
     let file = fs::OpenOptions::new()
         .read(true)
@@ -237,7 +237,7 @@ fn open_existing_regular(path: &Path, managed: bool) -> io::Result<fs::File> {
     Ok(file)
 }
 
-fn open_private_file(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn open_private_file(path: &Path) -> io::Result<fs::File> {
     match open_existing_regular(path, true) {
         Ok(file) => Ok(file),
         Err(error) if error.kind() == io::ErrorKind::NotFound => create_private_file(path),

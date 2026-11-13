@@ -32,7 +32,7 @@ pub fn command(account_arg: Arg) -> Command {
         .arg(
             Arg::new("reason")
                 .long("reason")
-                .help("The reason for the transfer (max 50 characters)")
+                .help("The reason for the transfer (local max 50 UTF-8 bytes; provider contract unverified)")
                 .required(false),
         )
 }
