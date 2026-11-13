@@ -4,14 +4,14 @@
         "--name",
         "bourso-api-dev"
     ],
-    "image": "mcr.microsoft.com/devcontainers/rust:latest",
+    "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm@sha256:86d9228ec0744191b45ec91e2bb9a0dd7d7bfd4c4f01ef47abb78032ddddf1c7",
     "remoteUser": "vscode",
-    "postCreateCommand": "rustup component add clippy rustfmt",
+    "postCreateCommand": "rustup toolchain install 1.96.1 --profile minimal --component clippy --component rustfmt --component llvm-tools-preview",
     "customizations": {
         "vscode": {
             "settings": {
                 "editor.formatOnSave": true,
-                "terminal.integrated.defaultProfile.linux": "zsh",
+                "terminal.integrated.defaultProfile.linux": "bash",
                 "rust-analyzer.check.command": "clippy",
                 "evenBetterToml.formatter.alignEntries": true,
                 "evenBetterToml.formatter.columnWidth": 100,
@@ -29,13 +29,6 @@
                 "fill-labs.dependi",
                 "github.vscode-github-actions"
             ]
-        }
-    },
-    "features": {
-        "ghcr.io/devcontainers-extra/features/zsh-plugins:0": {
-            "plugins": "git golang zsh-autosuggestions zsh-syntax-highlighting",
-            "omzPlugins": "https://github.com/zsh-users/zsh-autosuggestions https://github.com/zsh-users/zsh-syntax-highlighting",
-            "username": "vscode"
         }
     }
 }
