@@ -1,0 +1,8 @@
+/tmp/bourso-ci-frozen-native/tmp.bMNCfjHqRP/linux/bourso-cli-linux.tar.gz
+/tmp/bourso-ci-frozen-native/tmp.bMNCfjHqRP/darwin/bourso-cli-darwin.tar.gz
+/tmp/bourso-ci-frozen-native/tmp.bMNCfjHqRP/windows/bourso-cli-windows.zip
+PASS: Linux/macOS tar + Windows zip contents, project/third-party license, archive provenance
+missing binary
+unsupported platform
+no upstream license/notice text found for fixture-dependency-1.2.3; legal review required
+PASS: invalid inputs and absent license texts rejected
