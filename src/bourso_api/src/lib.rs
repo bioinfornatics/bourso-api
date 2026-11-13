@@ -11,3 +11,5 @@ pub fn get_client() -> client::BoursoWebClient {
 #[path = "client/outcome.rs"]
 pub mod outcome;
 pub use outcome::{OutcomeOperation, OutcomeStage, OutcomeUnknown};
+
+pub mod replay_guard;

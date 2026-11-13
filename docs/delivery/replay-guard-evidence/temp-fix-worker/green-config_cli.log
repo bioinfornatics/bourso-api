@@ -1,0 +1,9 @@
+   Compiling bourso-cli v0.6.0 (/home/jmercier/Codes/me/bourso-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/config_cli.rs (target/debug/deps/config_cli-591cc6e9e1e14c44)
+
+running 1 test
+test fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+

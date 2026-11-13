@@ -1,0 +1,44 @@
+   Compiling bourso-cli v0.6.0 (/home/jmercier/Codes/me/bourso-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+     Running unittests src/lib.rs (target/debug/deps/bourso_cli-408ecf1384a1b894)
+
+running 4 tests
+test financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive ... FAILED
+test financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive ... FAILED
+test settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive ... FAILED
+test settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive ... FAILED
+
+failures:
+
+---- financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive stdout ----
+
+thread 'financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive' (2082279) panicked at src/financial_guard.rs:347:45:
+owner must unlock despite duplicate: Financial storage unavailable
+
+---- financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive stdout ----
+
+thread 'financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive' (2082280) panicked at src/financial_guard.rs:378:34:
+validation error must unlock despite duplicate: Financial storage unavailable
+
+---- settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive stdout ----
+
+thread 'settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive' (2082282) panicked at src/settings.rs:552:18:
+preparation error must unlock despite duplicate: "WouldBlock"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive stdout ----
+
+thread 'settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive' (2082281) panicked at src/settings.rs:515:54:
+owner must unlock despite duplicate: Custom { kind: Other, error: "Log storage is already locked or cannot be locked" }
+
+
+failures:
+    financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive
+    financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive
+    settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive
+    settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bourso-cli --lib`
+exit=101

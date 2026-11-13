@@ -90,6 +90,14 @@ struct Guard {
     directory: PathBuf,
     _lock: File,
 }
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // A concurrent spawn may inherit the file description before exec.
+        // Explicitly unlock rather than relying on closing only our descriptor;
+        // preserve both the stable lock inode and the unresolved journal.
+        let _ = self._lock.unlock();
+    }
+}
 impl Guard {
     fn open(directory: &Path) -> Result<Self> {
         settings::private_directory(directory)?;
@@ -330,6 +338,67 @@ mod tests {
         drop(first);
         assert!(Session::at(&temp.0).is_ok());
         assert!(temp.0.join("financial.lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn financial_owner_drop_releases_with_duplicate_alive() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = Temp::new();
+        let guard = Guard::open(&temp.0).unwrap();
+        guard.begin(Operation::Order).unwrap();
+        let journal = fs::read(temp.0.join(JOURNAL)).unwrap();
+        let duplicate = guard._lock.try_clone().unwrap();
+        let inode = duplicate.metadata().unwrap().ino();
+        assert!(Guard::open(&temp.0).is_err());
+        drop(guard);
+        let reopened = Guard::open(&temp.0).expect("owner must unlock despite duplicate");
+        assert_eq!(
+            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
+            inode
+        );
+        assert_eq!(fs::read(temp.0.join(JOURNAL)).unwrap(), journal);
+        assert!(reopened.ensure_clear().is_err());
+        drop(duplicate);
+        assert!(Guard::open(&temp.0).is_err());
+        drop(reopened);
+        assert!(Guard::open(&temp.0).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn financial_preparation_error_releases_with_duplicate_alive() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = Temp::new();
+        fs::write(temp.0.join(JOURNAL), b"invalid journal: preserve").unwrap();
+        let mut duplicate = None;
+        let result = (|| -> Result<Session> {
+            let guard = Guard::open(&temp.0)?;
+            duplicate = Some(guard._lock.try_clone()?);
+            // Same post-acquisition validation and error exit as Session::at.
+            guard.ensure_clear()?;
+            Ok(Session(guard))
+        })();
+        assert!(result.is_err());
+        let duplicate = duplicate.unwrap();
+        let inode = duplicate.metadata().unwrap().ino();
+        let reopened =
+            Guard::open(&temp.0).expect("validation error must unlock despite duplicate");
+        assert_eq!(
+            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
+            inode
+        );
+        assert_eq!(
+            fs::read(temp.0.join(JOURNAL)).unwrap(),
+            b"invalid journal: preserve"
+        );
+        drop(duplicate);
+        assert!(Guard::open(&temp.0).is_err());
+        drop(reopened);
+        assert!(
+            Session::at(&temp.0).is_err(),
+            "invalid journal still blocks replay"
+        );
     }
 
     #[tokio::test]

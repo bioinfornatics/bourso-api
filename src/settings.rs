@@ -248,11 +248,23 @@ pub(crate) fn open_private_file(path: &Path) -> io::Result<fs::File> {
 // Conservative, fixed retention: one active file and one backup, never a glob.
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
+// Own the acquired OS lock separately from logger preparation: any subsequent
+// error must unlock even if a concurrent process spawn inherited a descriptor.
+struct LogLock(fs::File);
+
+impl Drop for LogLock {
+    fn drop(&mut self) {
+        // Closing our descriptor alone can leave an inherited description locked.
+        // Never delete or replace the stable lock inode.
+        let _ = self.0.unlock();
+    }
+}
+
 struct RotatingLog {
     directory: std::path::PathBuf,
     file: Option<fs::File>,
     // Keep the stable lock inode open across rotations (std file locking, Rust 1.89+).
-    _lock: fs::File,
+    _lock: LogLock,
 }
 
 impl RotatingLog {
@@ -261,6 +273,11 @@ impl RotatingLog {
         let lock = open_private_file(&directory.join("bourso.log.lock"))?;
         lock.try_lock()
             .map_err(|_| io::Error::other("Log storage is already locked or cannot be locked"))?;
+        Self::open_locked(directory, LogLock(lock))
+    }
+
+    // Keep post-acquisition preparation in one scope, including every error exit.
+    fn open_locked(directory: &Path, lock: LogLock) -> io::Result<Self> {
         Self::check_archive(directory)?;
         let mut file = open_private_file(&directory.join("bourso.log"))?;
         Self::check_size(&file)?;
@@ -493,6 +510,67 @@ mod private_storage_tests {
         assert!(RotatingLog::open(&directory).is_err());
         drop(log);
         assert!(RotatingLog::open(&directory).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_owner_drop_releases_with_duplicate_alive() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = Temp::new();
+        let directory = temp.directory();
+        let mut log = RotatingLog::open(&directory).unwrap();
+        log.append(b"keep log").unwrap();
+        let duplicate = log._lock.0.try_clone().unwrap();
+        let inode = duplicate.metadata().unwrap().ino();
+        assert!(RotatingLog::open(&directory).is_err());
+        drop(log);
+        let reopened = RotatingLog::open(&directory).expect("owner must unlock despite duplicate");
+        assert_eq!(
+            fs::metadata(directory.join("bourso.log.lock"))
+                .unwrap()
+                .ino(),
+            inode
+        );
+        assert_eq!(fs::read(directory.join("bourso.log")).unwrap(), b"keep log");
+        // Dropping an old duplicate must not release the new owner's lock.
+        drop(duplicate);
+        assert!(RotatingLog::open(&directory).is_err());
+        drop(reopened);
+        assert!(RotatingLog::open(&directory).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_preparation_error_releases_with_duplicate_alive() {
+        use std::os::unix::fs::MetadataExt;
+        for oversized in ["bourso.log.1", "bourso.log"] {
+            let temp = Temp::new();
+            let directory = temp.directory();
+            private_directory(&directory).unwrap();
+            let path = directory.join(oversized);
+            let mut data = create_private_file(&path).unwrap();
+            data.write_all(b"keep data").unwrap();
+            data.set_len(MAX_LOG_BYTES + 1).unwrap();
+            let lock_path = directory.join("bourso.log.lock");
+            let lock = open_private_file(&lock_path).unwrap();
+            lock.try_lock().unwrap();
+            let duplicate = lock.try_clone().unwrap();
+            let inode = duplicate.metadata().unwrap().ino();
+            // Exercise the same fallible preparation as open(), after acquisition.
+            assert!(RotatingLog::open_locked(&directory, LogLock(lock)).is_err());
+            let contender = open_private_file(&lock_path).unwrap();
+            contender
+                .try_lock()
+                .expect("preparation error must unlock despite duplicate");
+            assert_eq!(contender.metadata().unwrap().ino(), inode);
+            assert_eq!(fs::metadata(&path).unwrap().len(), MAX_LOG_BYTES + 1);
+            let mut prefix = [0; 9];
+            data.seek(io::SeekFrom::Start(0)).unwrap();
+            data.read_exact(&mut prefix).unwrap();
+            assert_eq!(&prefix, b"keep data");
+            contender.unlock().unwrap();
+            drop(duplicate);
+        }
     }
 
     #[test]

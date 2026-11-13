@@ -1,0 +1,13 @@
+   Compiling bourso-cli v0.6.0 (/home/jmercier/Codes/me/bourso-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.83s
+     Running unittests src/lib.rs (target/debug/deps/bourso_cli-408ecf1384a1b894)
+
+running 4 tests
+test settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive ... ok
+test settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive ... ok
+test financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive ... ok
+test financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+
+exit=0

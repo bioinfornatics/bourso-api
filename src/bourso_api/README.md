@@ -99,9 +99,19 @@ caller-provided bytes. Protect the destination directory and exported data.
 `order` preserves explicit side/nonzero quantity and validates calendar dates,
 but check/confirm business semantics remain unsafe/unverified. Its returned
 order ID/optional price is **not** proof of execution. Transfer confirmation
-likewise lacks a verified bank receipt contract. No reliable `OutcomeUnknown`
-state/reconciliation or idempotency guarantee exists yet; never retry a financial
-POST blindly after an error. See `bourso-y3u.4` and `bourso-y3u.8`.
+likewise lacks a verified bank receipt contract. Public typed `OutcomeUnknown`
+identifies final submission failures, with expurgated diagnostics and an explicitly
+sensitive reference accessor; it is not durable recovery or reconciliation.
+Never retry a financial POST blindly after an error or a dropped future.
+
+An additive `replay_guard::ReplayGuard` can reserve a private local journal before
+invoking a closure, preserving original results and blocking cooperative replay
+until explicit operator review. Storage requires an absolute consumer-provided
+path; no global directory is selected. Construct and fully consume transfer
+streams inside the guarded closure. Raw APIs bypass it, and CLI/DCA journals
+remain separate. See [library replay barrier](../../docs/LIBRARY_REPLAY_GUARD.md)
+for its API, result nesting, Unix-only storage, crash and power-loss limits.
+Provider obligations `bourso-y3u.4` and `bourso-y3u.8` remain open.
 
 ## Network/test boundary
 

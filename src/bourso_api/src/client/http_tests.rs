@@ -1319,3 +1319,357 @@ fn dropping_public_transfer_owner_after_final_post_disconnects_without_retry() {
         cancel_public_submission_after_complete_final_post(api);
     }
 }
+
+// LIBGUARD: real public order/transfer entrypoints through the opt-in guard.
+#[cfg(unix)]
+struct ReplayTemp(std::path::PathBuf);
+#[cfg(unix)]
+impl ReplayTemp {
+    fn new() -> Self {
+        Self(std::env::temp_dir().join(format!(
+            "bourso-api-loopback-replay-{}-{:032x}",
+            std::process::id(),
+            rand::random::<u128>()
+        )))
+    }
+}
+#[cfg(unix)]
+impl Drop for ReplayTemp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+#[cfg(unix)]
+const GUARDED_APIS: [PublicSubmission; 4] = [
+    PublicSubmission::Order,
+    PublicSubmission::OrderDetailed,
+    PublicSubmission::TransferFunds,
+    PublicSubmission::TransferMoney,
+];
+
+#[test]
+#[cfg(unix)]
+fn replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen() {
+    use crate::{replay_guard::ReplayGuard, OutcomeUnknown};
+    for api in GUARDED_APIS {
+        run(async {
+            let temp = ReplayTemp::new();
+            let mut guard = ReplayGuard::open(&temp.0).unwrap();
+            let mut replies = api.prefix();
+            replies.extend([Reply::Close, Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+            let mut server = Server::new(replies);
+            let mut client = fixture_client(server.address);
+            client.config = logging_config();
+            let error = guard
+                .invoke(api.operation(), || {
+                    let json: serde_json::Value = serde_json::from_slice(
+                        &std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(json["version"], 1);
+                    api.submit(&client)
+                })
+                .await
+                .unwrap()
+                .unwrap_err()
+                .context("guard caller");
+            let unknown = error.downcast_ref::<OutcomeUnknown>().unwrap();
+            assert_eq!(unknown.operation, api.operation());
+            assert_eq!(unknown.reference(), "SENTINEL_TOKEN");
+            let bytes = std::fs::read(temp.0.join("replay-unresolved.json")).unwrap();
+            super::logging_tests::assert_clean(
+                None,
+                &String::from_utf8(bytes.clone()).unwrap(),
+                LOG_SECRETS,
+            );
+            drop(guard);
+            let mut reopened = ReplayGuard::open(&temp.0).unwrap();
+            assert!(reopened
+                .invoke(api.operation(), || {
+                    panic!("reopened guard must not construct public submission");
+                    #[allow(unreachable_code)]
+                    api.submit(&client)
+                })
+                .await
+                .is_err());
+            assert_eq!(
+                std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
+                bytes
+            );
+            for _ in api.request_lines() {
+                assert!(matches!(server.event().await, Event::Request(_)));
+            }
+            assert!(matches!(server.event().await, Event::QuietObserved));
+            api.assert_requests(&server.finish());
+        });
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn replay_guard_owner_drop_after_complete_public_post_blocks_reopen() {
+    use crate::replay_guard::ReplayGuard;
+    for api in GUARDED_APIS {
+        run(async {
+            let temp = ReplayTemp::new();
+            let mut guard = ReplayGuard::open(&temp.0).unwrap();
+            let mut replies = api.prefix();
+            replies.extend([Reply::Hold, Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+            let mut server = Server::new(replies);
+            let mut client = fixture_client(server.address);
+            client.config = logging_config();
+            let mut pending = Box::pin(guard.invoke(api.operation(), || api.submit(&client)));
+            let mut observed = Vec::new();
+            for expected in api.request_lines() {
+                match futures_util::future::select(Box::pin(server.event()), pending).await {
+                    futures_util::future::Either::Left((
+                        Event::Request(request),
+                        still_pending,
+                    )) => {
+                        assert_eq!(request.lines().next().unwrap(), expected);
+                        // Independent evidence: fully parseable reservation BEFORE
+                        // even the first HTTP request has been processed.
+                        let entry: serde_json::Value = serde_json::from_slice(
+                            &std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(entry["version"], 1);
+                        observed.push(request);
+                        pending = still_pending;
+                    }
+                    _ => panic!("guarded public owner completed before cancellation"),
+                }
+            }
+            api.assert_requests(&observed);
+            let bytes = std::fs::read(temp.0.join("replay-unresolved.json")).unwrap();
+            drop(pending); // owns the future AND its transfer stream, not next().
+            drop(guard);
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_millis(500), server.event())
+                    .await
+                    .unwrap(),
+                Event::Disconnected
+            ));
+            let mut reopened = ReplayGuard::open(&temp.0).unwrap();
+            assert!(reopened
+                .invoke(api.operation(), || {
+                    panic!("drop/reopen must not issue another public request");
+                    #[allow(unreachable_code)]
+                    api.submit(&client)
+                })
+                .await
+                .is_err());
+            assert_eq!(
+                std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
+                bytes
+            );
+            assert!(matches!(server.event().await, Event::QuietObserved));
+            api.assert_requests(&server.finish());
+        });
+    }
+}
+
+// Isolated child; the parent fixture verifies complete final POST then SIGKILLs
+// it. No Drop, result handling or journal cleanup is allowed to run in the child.
+#[test]
+#[ignore]
+#[cfg(unix)]
+fn replay_guard_http_crash_child() {
+    use crate::replay_guard::ReplayGuard;
+    let path = std::env::var_os("BOURSO_REPLAY_HTTP_PATH").unwrap();
+    let address = std::env::var("BOURSO_REPLAY_HTTP_ADDRESS")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let index: usize = std::env::var("BOURSO_REPLAY_HTTP_API")
+        .unwrap()
+        .parse()
+        .unwrap();
+    run(async {
+        let mut guard = ReplayGuard::open(std::path::PathBuf::from(path)).unwrap();
+        let mut client = fixture_client(address);
+        client.config = logging_config();
+        let api = GUARDED_APIS[index];
+        let _ = guard.invoke(api.operation(), || api.submit(&client)).await;
+        panic!("held submission must be killed before returning");
+    });
+}
+#[cfg(unix)]
+struct ReplayChild(std::process::Child);
+#[cfg(unix)]
+impl Drop for ReplayChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn replay_guard_process_crash_after_complete_public_post_blocks_reopen() {
+    use crate::replay_guard::{GuardError, ReplayGuard};
+    for (index, api) in GUARDED_APIS.into_iter().enumerate() {
+        run(async {
+            let temp = ReplayTemp::new();
+            let mut replies = api.prefix();
+            replies.extend([Reply::Hold, Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+            let mut server = Server::new(replies);
+            let mut child = ReplayChild(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "client::http_tests::replay_guard_http_crash_child",
+                        "--ignored",
+                    ])
+                    .env("BOURSO_REPLAY_HTTP_PATH", &temp.0)
+                    .env("BOURSO_REPLAY_HTTP_ADDRESS", server.address.to_string())
+                    .env("BOURSO_REPLAY_HTTP_API", index.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let mut observed = Vec::new();
+            for _ in api.request_lines() {
+                match server.event().await {
+                    Event::Request(request) => observed.push(request),
+                    _ => panic!("expected complete public request before crash"),
+                }
+            }
+            api.assert_requests(&observed);
+            assert!(matches!(
+                ReplayGuard::open(&temp.0),
+                Err(GuardError::Locked)
+            ));
+            let bytes = std::fs::read(temp.0.join("replay-unresolved.json")).unwrap();
+            child.0.kill().unwrap();
+            assert!(!child.0.wait().unwrap().success());
+            assert!(matches!(server.event().await, Event::Disconnected));
+            let mut reopened = ReplayGuard::open(&temp.0).unwrap();
+            let client = fixture_client(server.address);
+            assert!(reopened
+                .invoke(api.operation(), || {
+                    panic!("crash/reopen must not issue another public request");
+                    #[allow(unreachable_code)]
+                    api.submit(&client)
+                })
+                .await
+                .is_err());
+            assert_eq!(
+                std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
+                bytes
+            );
+            assert!(matches!(server.event().await, Event::QuietObserved));
+            api.assert_requests(&server.finish());
+        });
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn replay_guard_nominal_public_outputs_remain_original_and_unresolved() {
+    use super::{
+        trade::order::{OrderConfirmResponse, OrderSide, OrderSubmissionStatus},
+        transfer::TransferProgress,
+    };
+    use crate::replay_guard::ReplayGuard;
+    use futures_util::StreamExt;
+    for api in GUARDED_APIS {
+        run(async {
+            let temp = ReplayTemp::new();
+            let mut guard = ReplayGuard::open(&temp.0).unwrap();
+            let mut replies = api.prefix();
+            let confirm = OrderConfirmResponse {
+                order_id: "SENTINEL_USER".into(),
+                ..Default::default()
+            };
+            replies.push(match api.operation() {
+                crate::OutcomeOperation::Order => {
+                    response("201 Created", "", &serde_json::to_string(&confirm).unwrap())
+                }
+                crate::OutcomeOperation::Transfer => ok("Confirmation"),
+            });
+            replies.push(Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW));
+            let mut server = Server::new(replies);
+            let mut client = fixture_client(server.address);
+            client.config = logging_config();
+            let account = crate::account::Account {
+                id: "SENTINEL_USER".into(),
+                ..Default::default()
+            };
+            match api {
+                PublicSubmission::Order => {
+                    let original = guard
+                        .invoke(api.operation(), || {
+                            client.order(OrderSide::Buy, &account, "TEST", 2, None)
+                        })
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(original.0, "SENTINEL_USER");
+                }
+                PublicSubmission::OrderDetailed => {
+                    let original = guard
+                        .invoke(api.operation(), || {
+                            client.order_detailed(OrderSide::Buy, &account, "TEST", 2, None)
+                        })
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(original.order_id, "SENTINEL_USER");
+                    assert_eq!(original.status, OrderSubmissionStatus::SubmittedUnverified);
+                }
+                PublicSubmission::TransferFunds | PublicSubmission::TransferMoney => {
+                    let original: Vec<_> = guard
+                        .invoke(api.operation(), || async {
+                            match api {
+                                PublicSubmission::TransferFunds => {
+                                    client
+                                        .transfer_funds(
+                                            12.0,
+                                            account.clone(),
+                                            account,
+                                            Some("SENTINEL_BODY".into()),
+                                        )
+                                        .collect()
+                                        .await
+                                }
+                                PublicSubmission::TransferMoney => {
+                                    client
+                                        .transfer_money(
+                                            "12.00".parse().unwrap(),
+                                            account.clone(),
+                                            account,
+                                            Some("SENTINEL_BODY".into()),
+                                        )
+                                        .collect()
+                                        .await
+                                }
+                                _ => unreachable!(),
+                            }
+                        })
+                        .await
+                        .unwrap();
+                    assert!(original.iter().all(Result::is_ok));
+                    assert!(matches!(
+                        original.last().unwrap(),
+                        Ok(TransferProgress::SubmittedUnverified)
+                    ));
+                }
+            }
+            assert!(guard.unresolved().unwrap().is_some());
+            drop(guard);
+            let mut reopened = ReplayGuard::open(&temp.0).unwrap();
+            assert!(reopened
+                .invoke(api.operation(), || async {
+                    panic!("nominal output must not release replay barrier")
+                })
+                .await
+                .is_err());
+            for _ in api.request_lines() {
+                assert!(matches!(server.event().await, Event::Request(_)));
+            }
+            assert!(matches!(server.event().await, Event::QuietObserved));
+            api.assert_requests(&server.finish());
+        });
+    }
+}

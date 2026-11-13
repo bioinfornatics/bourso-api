@@ -49,7 +49,7 @@ Do not submit a raw HAR or active secrets.
 | `.4` CONTRACTS-2 | Existing financial examples plus provenance and anonymization review | Local matrix and explicit unknowns; local mocks/docs/packaging do not wait |
 | `.6` ORDERCHECK-1/2, contract portion | Prepare/check nominal, warning, refusal; quantity >1 amount/limit/fee examples; correlated confirm with attested outcome | Divergence/messages stop confirm; matching synthetic intention still submits; CLI no execution claim |
 | `.7` TRANSFERPROOF-2/3 | Complete allowed transitions including login/error/unexpected forms and trusted receipt carrying source/destination/amount/reference | Submission stages preserved, exact cents and unverified final response; cannot invent positive transition parser |
-| `.8` UNKNOWN-2/3 beyond local guards | Approved library recovery scope/decision and trusted positive/refusal/reconciliation semantics | Typed unknown errors, CLI replay guard, DCA guard; direct API consumers remain responsible for safe orchestration |
+| `.8` UNKNOWN-2/3 beyond local guards | Trusted positive/refusal/reconciliation semantics and remaining original scope acceptance | Typed unknown errors, CLI/DCA guards and additive opt-in library guard `.42` ([scope](LIBRARY_REPLAY_GUARD.md)); raw/direct API consumers remain responsible for safe orchestration |
 | `.24` MARKET-1/2 | Cited market timezone/status/calendar; DST, holidays, midnight examples | Conservative Unknown without trustworthy data |
 | `.26` REASON-1/3 | Provider policy or validated existing Unicode examples identifying unit and limit | Honest unchanged 50-byte local policy and pre-request boundary rejection |
 

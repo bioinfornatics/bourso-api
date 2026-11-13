@@ -1,0 +1,46 @@
+   Compiling bourso-cli v0.6.0 (/home/jmercier/Codes/me/bourso-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests/financial_guard_cli.rs (target/debug/deps/financial_guard_cli-d25507cac17f907a)
+
+running 1 test
+test fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls ... FAILED
+
+failures:
+
+---- fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls stdout ----
+
+thread '<unnamed>' (2158768) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (2158766) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158767) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158769) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread 'fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls' (2158765) panicked at tests/financial_guard_cli.rs:263:46:
+called `Result::unwrap()` on an `Err` value: Any { .. }
+
+thread '<unnamed>' (2158773) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158772) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158771) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158770) panicked at tests/financial_guard_cli.rs:19:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+
+failures:
+    fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bourso-cli --test financial_guard_cli`
