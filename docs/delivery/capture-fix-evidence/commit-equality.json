@@ -1,0 +1,10 @@
+{
+  "status": "SAME_INPUT_BYTES_MODES_ENVIRONMENT",
+  "proof_candidate": "c438cbc4bae8be42976ba2894f45c727aae8aba10dd11e18013471f19179f830",
+  "post_source_commit_candidate": "e47d7e9cfaa33a75d9fd37739b9fb6079379e89f60769c113afbde3d47eea167",
+  "changed_fields": [
+    "git",
+    "candidate_id"
+  ],
+  "limit": "Precommit evidence retains original identity, not relabeled."
+}

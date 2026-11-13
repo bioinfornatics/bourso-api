@@ -1,0 +1,44 @@
+   Compiling bourso_api v0.6.0 (/home/jmercier/Codes/me/bourso-api/src/bourso_api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.27s
+     Running unittests src/lib.rs (target/debug/deps/bourso_api-1588f756708a268b)
+
+running 1 test
+
+thread 'client::logging_tests::capture_cold_callsite_from_uncaptured_thread' (1976672) panicked at src/bourso_api/src/client/logging_tests.rs:168:5:
+isolated capture regression failed: exit status: 101
+
+running 1 test
+test client::logging_tests::capture_cold_callsite_child ... FAILED
+
+failures:
+
+failures:
+    client::logging_tests::capture_cold_callsite_child
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.00s
+
+
+root=ThreadId(2) resumed=ThreadId(2) max=LevelFilter::TRACE attempts=2
+CAPTURED
+message=capture-probe
+message=capture-cold-control-before
+message=capture-cold-control-after
+END_CAPTURED
+
+thread 'client::logging_tests::capture_cold_callsite_child' (1976674) panicked at src/bourso_api/src/client/logging_tests.rs:228:5:
+assertion `left == right` failed: ON capture must deliver after first registration on an uncaptured thread
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test client::logging_tests::capture_cold_callsite_from_uncaptured_thread ... FAILED
+
+failures:
+
+failures:
+    client::logging_tests::capture_cold_callsite_from_uncaptured_thread
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bourso_api --lib`

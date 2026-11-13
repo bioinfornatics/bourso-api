@@ -1,0 +1,47 @@
+● bourso-y3u ● P1 [epic] Fiabiliser Bourso CLI/API après la revue du 13 novembre 2026
+├── ✓ bourso-y3u.3 ● P1 task Rendre les parcours bancaires testables sans appeler Bourso
+├── ● bourso-y3u.4 ● P1 Établir les contrats financiers avec des fixtures anonymisées
+├── ✓ bourso-y3u.5 ● P1 bug Respecter les paramètres explicites dans le payload d’ordre
+├── ● bourso-y3u.6 ● P1 [bug] Bloquer la confirmation d’ordre sans contrôle métier conforme
+├── ● bourso-y3u.7 ● P1 [bug] Valider les transitions et le reçu métier du virement
+├── ● bourso-y3u.8 ● P1 [bug] Exposer et préserver les résultats financiers indéterminés
+├── ✓ bourso-y3u.10 ● P1 bug Expurger les données d’authentification de tous les logs
+├── ✓ bourso-y3u.11 ● P1 bug Protéger les fichiers locaux sensibles et leur rétention
+├── ✓ bourso-y3u.14 ● P1 bug Préserver la destination quand un export bancaire est invalide
+├── ✓ bourso-y3u.27 ● P1 bug Empêcher les doublons et faux succès du script DCA
+├── ✓ bourso-y3u.28 ● P1 task Instrumenter l’API complète et tester les parcours risqués
+├── ● bourso-y3u.29 ● P1 Bloquer les PR sur les gates des deux crates
+├── ● bourso-y3u.34 ● P1 Vérifier indépendamment le candidat corrigé et ses limites
+├── ✓ bourso-y3u.39 ● P1 task Vérifier les résultats inconnus et annulations par les API publiques
+├── ✓ bourso-y3u.40 ● P1 bug Refuser une référence vide de flux virement avant la transition suivante
+├── ✓ bourso-y3u.1 ● P2 task Unifier les verrous et les commandes de build des deux crates
+├── ✓ bourso-y3u.2 ● P2 task Déclarer le minimum Rust et réduire les features inutiles
+├── ✓ bourso-y3u.9 ● P2 bug Préserver les dates de validité des ordres
+├── ✓ bourso-y3u.12 ● P2 bug Rejeter les montants invalides avant tout appel bancaire
+├── ✓ bourso-y3u.13 ● P2 bug Normaliser les montants bancaires sans faux zéros
+├── ✓ bourso-y3u.15 ● P2 bug Échapper correctement les champs du CSV exporté
+├── ✓ bourso-y3u.16 ● P2 bug Distinguer portefeuille vide et réponse bancaire invalide
+├── ✓ bourso-y3u.17 ● P2 bug Borner toute la MFA par une deadline monotone
+├── ✓ bourso-y3u.18 ● P2 bug Retourner des erreurs pour les réponses d’authentification invalides
+├── ✓ bourso-y3u.19 ● P2 bug Vérifier la bijection du clavier avant login
+├── ✓ bourso-y3u.20 ● P2 bug Échouer explicitement sans configuration bancaire
+├── ✓ bourso-y3u.21 ● P2 bug Découpler les commandes publiques du chargement de configuration
+├── ✓ bourso-y3u.22 ● P2 bug Donner une sémantique explicite aux filtres de comptes
+├── ✓ bourso-y3u.23 ● P2 bug Retourner une absence de cours pour un historique vide
+├── ● bourso-y3u.24 ● P2 [bug] Définir l’ouverture avec statut ou calendrier de marché
+├── ✓ bourso-y3u.25 ● P2 bug Refuser les redirections hors périmètre bancaire HTTPS
+├── ✓ bourso-y3u.30 ● P2 task Épingler la supply chain et limiter les permissions des jobs
+├── ✓ bourso-y3u.31 ● P2 task Corriger les promesses et exemples de configuration et DCA
+├── ✓ bourso-y3u.35 ● P2 task Vérifier le gate rustfmt actuel des deux crates
+├── ✓ bourso-y3u.36 ● P2 task Journaliser les tentatives CLI et afficher les résultats financiers expurgés
+├── ✓ bourso-y3u.37 ● P2 task Prouver localement les gates CI et leur échec discriminant
+├── ✓ bourso-y3u.38 ● P2 task Livrer la matrice locale des contrats et preuves financières manquantes
+├── ✓ bourso-y3u.41 ● P2 bug Établir la fiabilité des captures tracing sous tests parallèles
+├── ● bourso-y3u.26 ● P3 [bug] Appliquer une limite Unicode cohérente au motif de virement
+├── ✓ bourso-y3u.32 ● P3 task Inclure les notices légales dans les artefacts distribués
+└── ● bourso-y3u.33 ● P3 Rétablir un contrôle rustfmt propre sans changement métier
+
+--------------------------------------------------------------------------------
+Total: 42 issues (0 open, 0 in progress)
+
+Status: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred
