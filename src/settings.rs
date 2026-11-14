@@ -143,12 +143,14 @@ fn unsafe_entry() -> io::Error {
 }
 
 pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
+    let builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     match builder.create(path) {
         Ok(()) => (),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),

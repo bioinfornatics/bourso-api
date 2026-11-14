@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-24.04, macos-15-intel, windows-2022]
     defaults:
       run:
         shell: bash
@@ -67,7 +67,7 @@ jobs:
             platform: linux
             target: x86_64-unknown-linux-gnu
             binary: bourso-cli
-          - os: macos-14
+          - os: macos-15-intel
             platform: darwin
             target: x86_64-apple-darwin
             binary: bourso-cli

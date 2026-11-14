@@ -146,7 +146,7 @@ def inspect(workflows, dev):
     require([s["run"] for s in gate_steps if "run" in s] == [install, *GATES], "mandatory gate commands/order changed")
     require(len(gate_steps) == 6 and all("if" not in s for s in gate_steps), "conditional/extra gate step")
     require(all("if" not in s for s in jobs["build"]["steps"]), "conditional build step")
-    require(jobs["gates"]["strategy"]["matrix"] == {"os": ["ubuntu-24.04", "macos-14", "windows-2022"]}, "platform gates changed")
+    require(jobs["gates"]["strategy"]["matrix"] == {"os": ["ubuntu-24.04", "macos-15-intel", "windows-2022"]}, "platform gates changed")
     for name in ["gates", "build"]:
         require(jobs[name]["steps"][0]["uses"].startswith("actions/checkout@"), f"{name}: missing checkout")
     require(jobs["coverage"]["uses"] == "./.github/workflows/coverage.yml", "coverage must use same-revision reusable workflow")
