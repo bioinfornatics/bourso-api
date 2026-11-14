@@ -212,7 +212,10 @@ mod tests {
     impl Temp {
         fn new() -> Self {
             static NEXT: AtomicUsize = AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!(
+            // Resolve only the existing system temp root (e.g. macOS /var -> /private/var).
+            // Production guard paths must still reject symlink ancestors.
+            let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+            let path = root.join(format!(
                 "bourso-guard-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
@@ -221,7 +224,13 @@ mod tests {
                     .as_nanos(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-            fs::create_dir(&path).unwrap();
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&path).unwrap();
             Self(path)
         }
     }

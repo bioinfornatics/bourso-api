@@ -14,13 +14,22 @@ impl Temp {
         // The clock can repeat, even on one thread; reserve a process-local suffix.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        // Resolve only the existing system temp root (e.g. macOS /var -> /private/var).
+        // Production guard paths must still reject symlink ancestors.
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let path = root.join(format!(
             "bourso-financial-{}-{}-{}",
             std::process::id(),
             nanos,
             sequence
         ));
-        fs::create_dir(&path).unwrap();
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path).unwrap();
         Self(path)
     }
 }
