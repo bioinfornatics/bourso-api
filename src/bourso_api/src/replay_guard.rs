@@ -383,7 +383,9 @@ mod tests {
     use super::*;
     #[test]
     fn owner_drop_releases_lock_even_with_inherited_descriptor() {
-        let path = std::env::temp_dir().join(format!(
+        // Resolve only the existing OS temp root, never the guard directory.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let path = root.join(format!(
             "bourso-api-replay-inherited-{:032x}",
             rand::random::<u128>()
         ));
@@ -403,7 +405,9 @@ mod tests {
     #[test]
     fn injected_write_and_flush_failures_never_call_and_never_clear() {
         for fault in [Fault::Write, Fault::Flush] {
-            let path = std::env::temp_dir().join(format!(
+            // Resolve only the existing OS temp root, never the guard directory.
+            let root = std::env::temp_dir().canonicalize().unwrap();
+            let path = root.join(format!(
                 "bourso-api-replay-fault-{:032x}",
                 rand::random::<u128>()
             ));

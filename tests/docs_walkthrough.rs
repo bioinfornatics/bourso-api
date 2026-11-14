@@ -16,13 +16,23 @@ const QUOTES: [&str; 2] = [
 struct Sandbox(PathBuf);
 impl Sandbox {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "bourso-docs-{}-{}",
-            std::process::id(),
+        Self::new_at(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+        )
+    }
+
+    fn new_at(nanos: u128) -> Self {
+        // The clock can repeat, even on one thread; reserve a process-local suffix.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "bourso-docs-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            sequence
         ));
         fs::create_dir(&path).unwrap();
         Self(path)
@@ -198,4 +208,37 @@ fn transfer_help_names_local_byte_policy_without_claiming_provider_contract() {
     assert!(help.contains("50 UTF-8 bytes"), "{help}");
     assert!(help.contains("provider contract unverified"), "{help}");
     assert!(!help.contains("max 50 characters"));
+}
+
+#[test]
+fn fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls() {
+    // Retain every directory until all workers finish, including repeated calls
+    // on each worker: a thread identifier alone cannot satisfy this regression.
+    let mut directories = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| (0..8).map(|_| Sandbox::new_at(0)).collect::<Vec<_>>()))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let paths: std::collections::HashSet<_> = directories.iter().map(|dir| &dir.0).collect();
+    assert_eq!(paths.len(), 64);
+    for (index, dir) in directories.iter().enumerate() {
+        assert!(dir.0.is_dir());
+        // Exclusive file creation also detects accidental directory reuse.
+        let mut marker = fs::File::create_new(dir.0.join("owner")).unwrap();
+        std::io::Write::write_all(&mut marker, index.to_string().as_bytes()).unwrap();
+    }
+    let removed = directories.pop().unwrap();
+    let removed_path = removed.0.clone();
+    drop(removed);
+    assert!(!removed_path.exists());
+    for (index, dir) in directories.iter().enumerate() {
+        assert_eq!(
+            fs::read_to_string(dir.0.join("owner")).unwrap(),
+            index.to_string()
+        );
+    }
 }

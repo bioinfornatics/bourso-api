@@ -1326,7 +1326,9 @@ struct ReplayTemp(std::path::PathBuf);
 #[cfg(unix)]
 impl ReplayTemp {
     fn new() -> Self {
-        Self(std::env::temp_dir().join(format!(
+        // Resolve only the existing OS temp root, never the guard directory.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        Self(root.join(format!(
             "bourso-api-loopback-replay-{}-{:032x}",
             std::process::id(),
             rand::random::<u128>()

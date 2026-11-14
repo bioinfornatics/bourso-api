@@ -5,7 +5,9 @@ use std::{fs, path::PathBuf};
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
+        // Resolve only the existing OS temp root, never the guard directory.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let path = root.join(format!(
             "bourso-api-guard-{}-{:032x}",
             std::process::id(),
             rand::random::<u128>()

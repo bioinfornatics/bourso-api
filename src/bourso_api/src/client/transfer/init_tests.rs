@@ -48,6 +48,8 @@ impl Fixture {
                     }
                     Err(error) => panic!("fixture accept: {error}"),
                 };
+                // Accepted sockets can inherit nonblocking mode on some platforms.
+                stream.set_nonblocking(false).unwrap();
                 requests.push(read_request(&mut stream));
                 let (status, headers, body) = match requests.len() {
                     1 => (
