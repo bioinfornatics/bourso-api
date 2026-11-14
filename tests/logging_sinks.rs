@@ -46,6 +46,8 @@ fn logger_child_probe() {
                 Err(error) => panic!("{error}"),
             }
         };
+        // Accepted sockets inherit listener nonblocking mode on Windows.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .unwrap();
