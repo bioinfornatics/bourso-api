@@ -181,6 +181,8 @@ fn fixture() -> (std::net::SocketAddr, thread::JoinHandle<Vec<String>>) {
                     Err(error) => panic!("fixture accept: {error}"),
                 }
             };
+            // Windows accepted sockets inherit nonblocking mode; restore blocking I/O.
+            stream.set_nonblocking(false).unwrap();
             requests.push(read_request(&mut stream));
             stream.set_write_timeout(Some(BOUND)).unwrap();
             write!(stream, "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();

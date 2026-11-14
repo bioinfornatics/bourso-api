@@ -95,6 +95,8 @@ impl Server {
                         Err(e) => panic!("local fixture accept: {e}"),
                     }
                 };
+                // Windows accepted sockets inherit nonblocking mode; restore blocking I/O.
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(BOUND)).unwrap();
                 stream.set_write_timeout(Some(BOUND)).unwrap();
                 let request = read_request(&mut stream);

@@ -171,6 +171,8 @@ fn with_checked_responses<T>(
                     Err(error) => panic!("local fixture accept: {error}"),
                 }
             };
+            // Windows accepted sockets inherit nonblocking mode; restore blocking I/O.
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();

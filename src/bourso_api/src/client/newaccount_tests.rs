@@ -31,6 +31,8 @@ fn fetch(status: &str, body: &str, kind: Option<AccountKind>) -> anyhow::Result<
                 Err(_) => panic!("fixture accept failed"),
             }
         };
+        // Windows accepted sockets inherit nonblocking mode; restore blocking I/O.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();

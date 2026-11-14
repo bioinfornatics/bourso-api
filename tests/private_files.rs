@@ -2,13 +2,13 @@
 use bourso_cli::settings::{get_settings, init_logger, save_settings, Settings};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 struct Home(PathBuf);
 impl Home {
@@ -17,10 +17,39 @@ impl Home {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("bourso-private-{}-{unique}", std::process::id()));
-        fs::create_dir(&path).unwrap();
+        Self::new_at_in(&std::env::temp_dir(), unique, false)
+    }
+    fn new_at_in(temp_root: &Path, unique: u128, socket: bool) -> Self {
+        // A clock tick can repeat, including on one thread. Reserve a suffix
+        // without depending on timing, thread identifiers, or retries.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Unix socket callers must not inherit a potentially long TMPDIR.
+        // /tmp is a trusted OS parent (it may itself be a symlink on macOS).
+        // Create a private child exclusively; never reuse an existing entry or
+        // assume the parent path is symlink-free. Do not canonicalize/lengthen it.
+        let root = if socket { Path::new("/tmp") } else { temp_root };
+        let path = root.join(format!(
+            "bp-{:x}-{unique:x}-{sequence:x}",
+            std::process::id()
+        ));
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(false);
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder.create(&path).unwrap();
         Self(path)
+    }
+    #[cfg(unix)]
+    fn for_socket() -> Self {
+        Self::new_at_in(
+            &std::env::temp_dir(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            true,
+        )
     }
 }
 impl Drop for Home {
@@ -335,7 +364,7 @@ fn existing_subscriber_returns_error_not_panic() {
 #[cfg(unix)]
 #[test]
 fn explicit_credentials_are_read_without_chmod_and_special_files_are_rejected() {
-    let home = Home::new();
+    let home = Home::for_socket();
     let path = home.0.join("credentials.json");
     fs::write(&path, br#"{"clientId":"external","password":null}"#).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
@@ -444,4 +473,66 @@ fn regular_file_cannot_be_used_as_managed_directory() {
         probe(&home, case);
     }
     assert_eq!(fs::read(path).unwrap(), b"untouched");
+}
+
+#[test]
+fn fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls() {
+    let parent = Home::new();
+    let directories = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let root = &parent.0;
+                scope.spawn(move || {
+                    (0..8)
+                        .map(|_| Home::new_at_in(root, 0, false))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let paths: std::collections::HashSet<_> = directories.iter().map(|dir| &dir.0).collect();
+    assert_eq!(paths.len(), 64);
+    for (index, dir) in directories.iter().enumerate() {
+        let mut marker = fs::File::create_new(dir.0.join("owner")).unwrap();
+        std::io::Write::write_all(&mut marker, index.to_string().as_bytes()).unwrap();
+    }
+    for (index, dir) in directories.iter().enumerate() {
+        assert_eq!(
+            fs::read_to_string(dir.0.join("owner")).unwrap(),
+            index.to_string()
+        );
+    }
+    let paths: Vec<_> = directories.iter().map(|dir| dir.0.clone()).collect();
+    drop(directories);
+    assert!(paths.iter().all(|path| !path.exists()));
+}
+
+#[cfg(unix)]
+#[test]
+fn socket_fixture_works_with_long_temp_root() {
+    use std::os::unix::fs::FileTypeExt;
+    let parent = Home::new();
+    let long_root = parent.0.join("t".repeat(120));
+    fs::create_dir(&long_root).unwrap();
+    // Inject the equivalent of a long TMPDIR without changing process environment.
+    let regular = Home::new_at_in(&long_root, 0, false);
+    assert!(regular.0.starts_with(&long_root));
+    // Exercise even the widest timestamp; the compact ASCII address fits
+    // macOS's bound with full-width PID and counter as well (at most 88 bytes).
+    let socket_home = Home::new_at_in(&long_root, u128::MAX, true);
+    let socket = fixture(&socket_home).join("settings.json");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    assert!(socket.as_os_str().len() < 104, "macOS sockaddr_un limit");
+    assert_eq!(mode(&socket_home.0), 0o700);
+    probe(&socket_home, "load-error");
+    probe(&socket_home, "save-error");
+    assert!(Settings::load(socket.to_str().unwrap()).is_err());
+    assert!(fs::symlink_metadata(&socket)
+        .unwrap()
+        .file_type()
+        .is_socket());
 }
