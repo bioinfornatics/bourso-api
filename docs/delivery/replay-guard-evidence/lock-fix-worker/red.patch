@@ -1,0 +1,156 @@
+diff --git a/src/financial_guard.rs b/src/financial_guard.rs
+index bcf7020..32faef7 100644
+--- a/src/financial_guard.rs
++++ b/src/financial_guard.rs
+@@ -332,6 +332,67 @@ mod tests {
+         assert!(temp.0.join("financial.lock").exists());
+     }
+ 
++    #[cfg(unix)]
++    #[test]
++    fn financial_owner_drop_releases_with_duplicate_alive() {
++        use std::os::unix::fs::MetadataExt;
++        let temp = Temp::new();
++        let guard = Guard::open(&temp.0).unwrap();
++        guard.begin(Operation::Order).unwrap();
++        let journal = fs::read(temp.0.join(JOURNAL)).unwrap();
++        let duplicate = guard._lock.try_clone().unwrap();
++        let inode = duplicate.metadata().unwrap().ino();
++        assert!(Guard::open(&temp.0).is_err());
++        drop(guard);
++        let reopened = Guard::open(&temp.0).expect("owner must unlock despite duplicate");
++        assert_eq!(
++            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
++            inode
++        );
++        assert_eq!(fs::read(temp.0.join(JOURNAL)).unwrap(), journal);
++        assert!(reopened.ensure_clear().is_err());
++        drop(duplicate);
++        assert!(Guard::open(&temp.0).is_err());
++        drop(reopened);
++        assert!(Guard::open(&temp.0).is_ok());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn financial_preparation_error_releases_with_duplicate_alive() {
++        use std::os::unix::fs::MetadataExt;
++        let temp = Temp::new();
++        fs::write(temp.0.join(JOURNAL), b"invalid journal: preserve").unwrap();
++        let mut duplicate = None;
++        let result = (|| -> Result<Session> {
++            let guard = Guard::open(&temp.0)?;
++            duplicate = Some(guard._lock.try_clone()?);
++            // Same post-acquisition validation and error exit as Session::at.
++            guard.ensure_clear()?;
++            Ok(Session(guard))
++        })();
++        assert!(result.is_err());
++        let duplicate = duplicate.unwrap();
++        let inode = duplicate.metadata().unwrap().ino();
++        let reopened =
++            Guard::open(&temp.0).expect("validation error must unlock despite duplicate");
++        assert_eq!(
++            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
++            inode
++        );
++        assert_eq!(
++            fs::read(temp.0.join(JOURNAL)).unwrap(),
++            b"invalid journal: preserve"
++        );
++        drop(duplicate);
++        assert!(Guard::open(&temp.0).is_err());
++        drop(reopened);
++        assert!(
++            Session::at(&temp.0).is_err(),
++            "invalid journal still blocks replay"
++        );
++    }
++
+     #[tokio::test]
+     async fn journal_creation_failure_does_not_invoke_fake_api() {
+         let temp = Temp::new();
+diff --git a/src/settings.rs b/src/settings.rs
+index 433fc3b..194eaad 100644
+--- a/src/settings.rs
++++ b/src/settings.rs
+@@ -261,6 +261,11 @@ impl RotatingLog {
+         let lock = open_private_file(&directory.join("bourso.log.lock"))?;
+         lock.try_lock()
+             .map_err(|_| io::Error::other("Log storage is already locked or cannot be locked"))?;
++        Self::open_locked(directory, lock)
++    }
++
++    // Keep post-acquisition preparation in one scope, including every error exit.
++    fn open_locked(directory: &Path, lock: fs::File) -> io::Result<Self> {
+         Self::check_archive(directory)?;
+         let mut file = open_private_file(&directory.join("bourso.log"))?;
+         Self::check_size(&file)?;
+@@ -495,6 +500,67 @@ mod private_storage_tests {
+         assert!(RotatingLog::open(&directory).is_ok());
+     }
+ 
++    #[cfg(unix)]
++    #[test]
++    fn log_owner_drop_releases_with_duplicate_alive() {
++        use std::os::unix::fs::MetadataExt;
++        let temp = Temp::new();
++        let directory = temp.directory();
++        let mut log = RotatingLog::open(&directory).unwrap();
++        log.append(b"keep log").unwrap();
++        let duplicate = log._lock.try_clone().unwrap();
++        let inode = duplicate.metadata().unwrap().ino();
++        assert!(RotatingLog::open(&directory).is_err());
++        drop(log);
++        let reopened = RotatingLog::open(&directory).expect("owner must unlock despite duplicate");
++        assert_eq!(
++            fs::metadata(directory.join("bourso.log.lock"))
++                .unwrap()
++                .ino(),
++            inode
++        );
++        assert_eq!(fs::read(directory.join("bourso.log")).unwrap(), b"keep log");
++        // Dropping an old duplicate must not release the new owner's lock.
++        drop(duplicate);
++        assert!(RotatingLog::open(&directory).is_err());
++        drop(reopened);
++        assert!(RotatingLog::open(&directory).is_ok());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn log_preparation_error_releases_with_duplicate_alive() {
++        use std::os::unix::fs::MetadataExt;
++        for oversized in ["bourso.log.1", "bourso.log"] {
++            let temp = Temp::new();
++            let directory = temp.directory();
++            private_directory(&directory).unwrap();
++            let path = directory.join(oversized);
++            let mut data = create_private_file(&path).unwrap();
++            data.write_all(b"keep data").unwrap();
++            data.set_len(MAX_LOG_BYTES + 1).unwrap();
++            let lock_path = directory.join("bourso.log.lock");
++            let lock = open_private_file(&lock_path).unwrap();
++            lock.try_lock().unwrap();
++            let duplicate = lock.try_clone().unwrap();
++            let inode = duplicate.metadata().unwrap().ino();
++            // Exercise the same fallible preparation as open(), after acquisition.
++            assert!(RotatingLog::open_locked(&directory, lock).is_err());
++            let contender = open_private_file(&lock_path).unwrap();
++            contender
++                .try_lock()
++                .expect("preparation error must unlock despite duplicate");
++            assert_eq!(contender.metadata().unwrap().ino(), inode);
++            assert_eq!(fs::metadata(&path).unwrap().len(), MAX_LOG_BYTES + 1);
++            let mut prefix = [0; 9];
++            data.seek(io::SeekFrom::Start(0)).unwrap();
++            data.read_exact(&mut prefix).unwrap();
++            assert_eq!(&prefix, b"keep data");
++            contender.unlock().unwrap();
++            drop(duplicate);
++        }
++    }
++
+     #[test]
+     fn rotation_error_keeps_current_file_and_does_not_touch_user_directory() {
+         let temp = Temp::new();

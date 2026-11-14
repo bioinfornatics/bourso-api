@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use crate::outcome::{OutcomeOperation, OutcomeStage, OutcomeUnknown};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
@@ -10,21 +11,36 @@ use crate::{
 
 use super::{get_trading_base_url, BoursoWebClient};
 
+#[cfg(test)]
+#[path = "order_tests.rs"]
+mod order_tests;
+
 impl BoursoWebClient {
     /// Place an order
     ///
     /// # Arguments
     ///
-    /// * `side` - Order side (buy or sell)
+    /// * `side` - Order side (buy or sell); overrides any value in `order_data` or API prefill
     /// * `account` - Account to use. Must be a trading account
     /// * `symbol` - Symbol to trade
-    /// * `quantity` - Quantity to trade
-    /// * `order_data` - Order data. If not set, will be fetched from Bourso API and filled with the given parameters
+    /// * `quantity` - Nonzero quantity to trade; overrides `order_data` and API prefill
+    /// * `order_data` - Other order options. If absent, use the API prefill. Explicit side and quantity always take precedence.
+    ///
+    /// A selected expiration date is preserved. If absent, the API prefill's
+    /// `order_validity` is used (and remains absent if no default is supplied).
+    /// Present expiration dates must be calendar-valid `YYYY-MM-DD` values;
+    /// malformed values fail after preparation, before check or confirmation.
+    /// No current-date, market-timezone, or maximum-validity policy is imposed here.
+    ///
+    /// Errors after final submission may downcast to [`OutcomeUnknown`]. Do not
+    /// reissue automatically; dropping this future cannot return such an error.
+    /// A returned tuple acknowledges only a submission response, not execution.
+    /// Use [`Self::order_detailed`] to inspect the unverified provider state.
     ///
     /// # Returns
     /// Order ID and order price limit
-    #[cfg(not(tarpaulin_include))]
-    pub async fn order(
+    #[cfg(test)]
+    pub(crate) async fn order(
         &self,
         side: OrderSide,
         account: &Account,
@@ -32,13 +48,37 @@ impl BoursoWebClient {
         quantity: usize,
         order_data: Option<OrderData>,
     ) -> Result<(String, Option<f64>)> {
+        let result = self
+            .order_detailed(side, account, symbol, quantity, order_data)
+            .await?;
+        Ok((result.order_id, result.order_price_limit))
+    }
+
+    /// Submit an order and retain the provider state without asserting execution.
+    /// Nonempty acceptability messages require review; no warning classification
+    /// or positive provider-state contract is assumed. Post-send failures remain
+    /// [`OutcomeUnknown`]; callers must not automatically retry.
+    pub(crate) async fn order_detailed(
+        &self,
+        side: OrderSide,
+        account: &Account,
+        symbol: &str,
+        quantity: usize,
+        order_data: Option<OrderData>,
+    ) -> Result<OrderSubmission> {
         if account.kind != AccountKind::Trading {
             return Err(anyhow::anyhow!("Account is not a trading account"));
         }
 
+        anyhow::ensure!(quantity > 0, "Order quantity must be greater than zero");
+
         let response = self.prepare(account, symbol).await?;
 
-        debug!("Prepare data {:#?}", response);
+        debug!("Order preparation received");
+        anyhow::ensure!(
+            response.acceptability_messages.is_empty(),
+            "Order preparation requires review of provider acceptability messages"
+        );
 
         // Either the order data set by the user
         // or a prefilled data object fetched from Bourso API
@@ -49,11 +89,9 @@ impl BoursoWebClient {
 
         let last_price = response.symbol.last_price;
 
-        // As either the data received by Bourso API or the data given by the user can contain
-        // and order quantity set to none, we forcefully define it here
-        if order_data.order_quantity.is_none() {
-            order_data.order_quantity = Some(quantity);
-        }
+        // Explicit intent is authoritative, even when the selected defaults disagree.
+        order_data.order_quantity = Some(quantity);
+        order_data.order_side = Some(side);
 
         if order_data.order_price_limit.is_none() && order_data.order_type == OrderKind::Limit {
             if order_data.order_amount.is_some() {
@@ -65,42 +103,65 @@ impl BoursoWebClient {
             }
         } // else TODO: other types of orders data definition
 
-        if order_data.order_side.is_none() {
-            order_data.order_side = Some(side);
-        }
-
         if order_data.order_expiration_date.is_none() {
-            // Set expiration date to date given by the API
+            // Only default an absent expiration; never replace the selected date with today.
             order_data.order_expiration_date = response.prefill_order_data.order_validity;
-        } else {
-            // Set order_data.order_expiration_date to today
-            order_data.order_expiration_date =
-                Some(chrono::Utc::now().format("%Y-%m-%d").to_string());
+        }
+        if let Some(date) = order_data.order_expiration_date.as_deref() {
+            // Validate a date, not an instant: no clock/timezone or provider maximum is implied.
+            let parsed = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| {
+                anyhow::anyhow!("Invalid order expiration date: expected YYYY-MM-DD")
+            })?;
+            anyhow::ensure!(
+                date.len() == 10 && parsed.format("%Y-%m-%d").to_string() == date,
+                "Invalid order expiration date: expected YYYY-MM-DD"
+            );
         }
 
         order_data.resource_id = Some(response.resource_id);
 
-        debug!("Order data: {:#?}", order_data);
+        debug!("Order data prepared");
 
-        self.check(&order_data).await?;
+        let checked = self.check(&order_data).await?;
+        anyhow::ensure!(
+            checked
+                .acceptability_messages
+                .as_ref()
+                .is_none_or(Vec::is_empty),
+            "Order check requires review of provider acceptability messages"
+        );
+        let echo = &checked.check_order_data;
+        anyhow::ensure!(
+            echo.order_side == order_data.order_side
+                && echo.order_quantity == order_data.order_quantity
+                && echo.order_price_limit == order_data.order_price_limit
+                && echo.order_type == order_data.order_type
+                && echo.order_expiration_date == order_data.order_expiration_date
+                && echo
+                    .resource_id
+                    .as_ref()
+                    .is_none_or(|id| Some(id) == order_data.resource_id.as_ref()),
+            "Order check intent differs from submitted intent; confirmation not sent"
+        );
 
         let response = self
-            .confirm(&order_data.resource_id.as_ref().unwrap())
+            .confirm(order_data.resource_id.as_ref().unwrap())
             .await?;
 
         info!(
-            quantity,
+            side = ?order_data.order_side,
+            quantity = order_data.order_quantity,
             symbol,
-            order_id = response.order_id,
             order_price_limit = order_data.order_price_limit,
-            "Order for {} {} successfully passed with ID {} at price {:?} ✅",
-            quantity,
-            symbol,
-            response.order_id,
-            order_data.order_price_limit
+            "Order submission response received; execution unverified"
         );
 
-        Ok((response.order_id, order_data.order_price_limit))
+        Ok(OrderSubmission {
+            order_id: response.order_id.clone(),
+            order_price_limit: order_data.order_price_limit,
+            status: OrderSubmissionStatus::SubmittedUnverified,
+            provider_state: RedactedOrderProviderState(response),
+        })
     }
 
     /// Prepare an order
@@ -115,26 +176,29 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// An order prepare response
-    #[cfg(not(tarpaulin_include))]
     async fn prepare(&self, account: &Account, symbol: &str) -> Result<OrderPrepareResponse> {
         let url = get_order_prepare_url(&self.config, account, symbol)?;
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = response.status();
 
-        let response = response.text().await?;
+        let response = response.text().await.map_err(reqwest::Error::without_url)?;
 
         if status_code != 200 {
             return Err(anyhow::anyhow!(
-                "Failed to get order prepare response: {}",
-                response
+                "Failed to get order prepare response, status code: {}",
+                status_code
             ));
         }
 
-        let response: OrderPrepareResponse = serde_json::from_str(&response).context(format!(
-            "Failed to parse order prepare response. Response: {}",
-            response
-        ))?;
+        let response: OrderPrepareResponse = serde_json::from_str(&response).map_err(|e| {
+            crate::client::safe_json_error("Failed to parse order prepare response", e)
+        })?;
 
         Ok(response)
     }
@@ -148,7 +212,6 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// An order check response
-    #[cfg(not(tarpaulin_include))]
     async fn check(&self, data: &OrderData) -> Result<OrderCheckResponse> {
         let url = get_order_check_url(&self.config)?;
         let response = self
@@ -157,23 +220,23 @@ impl BoursoWebClient {
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(data)?)
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = response.status();
 
-        let response = response.text().await?;
+        let response = response.text().await.map_err(reqwest::Error::without_url)?;
 
         if status_code != 200 {
             return Err(anyhow::anyhow!(
-                "Failed to get order check response: {}",
-                response
+                "Failed to get order check response, status code: {}",
+                status_code
             ));
         }
 
-        let response: OrderCheckResponse = serde_json::from_str(&response).context(format!(
-            "Failed to parse order check response. Response: {}",
-            response
-        ))?;
+        let response: OrderCheckResponse = serde_json::from_str(&response).map_err(|e| {
+            crate::client::safe_json_error("Failed to parse order check response", e)
+        })?;
 
         Ok(response)
     }
@@ -187,46 +250,39 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// An order confirm response
-    #[cfg(not(tarpaulin_include))]
     async fn confirm(&self, resource_id: &str) -> Result<OrderConfirmResponse> {
         let url = get_order_confirm_url(&self.config)?;
-        let response = self
+        // Local construction errors remain ordinary errors: nothing was attempted.
+        let body = serde_json::to_string(&serde_json::json!({ "resourceId": resource_id }))?;
+        let request = self
             .client
             .post(url)
             .header("Content-Type", "application/json")
-            .body(serde_json::to_string(&serde_json::json!({
-                "resourceId": resource_id
-            }))?)
+            .body(body);
+        let unknown = OutcomeUnknown::new(OutcomeOperation::Order, resource_id);
+        // Once send is attempted, even a transport error cannot establish whether
+        // the bank applied the operation. Deliberately do not retain raw causes.
+        let response = request
             .send()
-            .await?;
-
-        let status_code = response.status();
-
-        let response = response.text().await?;
-
-        if status_code != 201 {
-            return Err(anyhow::anyhow!(
-                "Failed to get order confirm response: {}",
-                response
-            ));
+            .await
+            .map_err(|_| unknown.at_stage(OutcomeStage::Sending))?;
+        if response.status() != 201 {
+            return Err(unknown.at_stage(OutcomeStage::HttpStatus).into());
         }
-
-        let response: OrderConfirmResponse = serde_json::from_str(&response).context(format!(
-            "Failed to parse order confirm response. Response: {}",
-            response
-        ))?;
+        let response = response
+            .text()
+            .await
+            .map_err(|_| unknown.at_stage(OutcomeStage::ReadingResponse))?;
+        let response: OrderConfirmResponse = serde_json::from_str(&response)
+            .map_err(|_| unknown.at_stage(OutcomeStage::ParsingResponse))?;
+        // A parsed 201 is a submission response, not a validated execution contract.
+        // Preserve raw state for explicit inspection, without inventing a mapping.
 
         Ok(response)
     }
 
-    /// Cancel an order that has not been executed yet
-    ///
-    /// # Arguments
-    ///
-    /// * `account` - Account to use. Must be a trading account
-    /// * `order_id` - ID of the order to cancel
-    #[cfg(not(tarpaulin_include))]
-    pub async fn cancel_order(&self, account: &Account, order_id: &str) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) async fn cancel_order(&self, account: &Account, order_id: &str) -> Result<()> {
         let url = get_cancel_order_url(&self.config)?;
         let response = self
             .client
@@ -237,20 +293,21 @@ impl BoursoWebClient {
                 "reference": order_id
             }))?)
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = response.status();
 
-        let response = response.text().await?;
+        let _response = response.text().await.map_err(reqwest::Error::without_url)?;
 
         if status_code != 200 {
             return Err(anyhow::anyhow!(
-                "Failed to get order prepare response: {}",
-                response
+                "Failed to get order prepare response, status code: {}",
+                status_code
             ));
         }
 
-        info!("Order {} successfully cancelled", order_id);
+        info!("Order successfully cancelled");
 
         Ok(())
     }
@@ -287,11 +344,52 @@ fn get_order_confirm_url(config: &Config) -> Result<String> {
     ))
 }
 
+#[cfg(test)]
 fn get_cancel_order_url(config: &Config) -> Result<String> {
     Ok(format!(
         "{}/orderdetail/cancel",
         get_trading_base_url(config)?
     ))
+}
+
+/// A response received after submission; this does not establish acceptance or execution.
+#[derive(Clone, PartialEq)]
+pub struct OrderSubmission {
+    pub order_id: String,
+    pub order_price_limit: Option<f64>,
+    pub status: OrderSubmissionStatus,
+    pub provider_state: RedactedOrderProviderState,
+}
+
+impl std::fmt::Debug for OrderSubmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrderSubmission")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderSubmissionStatus {
+    /// HTTP 201 with a parsed response; provider business semantics are unverified.
+    SubmittedUnverified,
+}
+
+/// Raw provider response, deliberately redacted in diagnostics.
+#[derive(Clone, PartialEq)]
+pub struct RedactedOrderProviderState(OrderConfirmResponse);
+
+impl RedactedOrderProviderState {
+    /// Sensitive provider data: inspect explicitly, never log without redaction.
+    pub fn expose(&self) -> &OrderConfirmResponse {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RedactedOrderProviderState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RedactedOrderProviderState([REDACTED])")
+    }
 }
 
 /// Data fetched from the `/order/prepare` endpoint
@@ -678,4 +776,40 @@ pub struct ActionApi {
 pub struct ActionApiParams {
     pub account_type: String,
     pub account_key: String,
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use crate::outcome::{tests::*, OutcomeOperation, OutcomeStage, OutcomeUnknown};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn final_order_post_errors_are_unknown_without_retry() {
+        run(async {
+            for (reply, stage) in [
+                ("", OutcomeStage::Sending),
+                ("HTTP/1.1 201 Created\r\nContent-Length: 999\r\nConnection: close\r\n\r\n{", OutcomeStage::ReadingResponse),
+                ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", OutcomeStage::HttpStatus),
+                ("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", OutcomeStage::HttpStatus),
+                ("HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}", OutcomeStage::ParsingResponse),
+                ("HTTP/1.1 201 Created\r\nContent-Length: 32\r\nConnection: close\r\n\r\nsynthetic-private-resource-token", OutcomeStage::ParsingResponse),
+            ] {
+                let (client, applied, worker) = server(reply);
+                let error = client.confirm(SECRET).await.unwrap_err();
+                worker.join().unwrap();
+                assert_eq!(applied.load(Ordering::SeqCst), 1);
+                assert_unknown(error, OutcomeOperation::Order, stage);
+            }
+        });
+    }
+
+    #[test]
+    fn before_order_submission_error_is_not_unknown() {
+        run(async {
+            let client = BoursoWebClient::new();
+            let error = client.confirm(SECRET).await.unwrap_err();
+            assert!(error.downcast_ref::<OutcomeUnknown>().is_none());
+        });
+    }
 }

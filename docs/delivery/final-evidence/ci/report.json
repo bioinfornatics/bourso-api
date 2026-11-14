@@ -1,0 +1,312 @@
+{
+  "started_at": "2026-11-13T20:30:51.939981+00:00",
+  "source_contract": "PASS",
+  "native": {
+    "status": "PASS",
+    "commands": [
+      {
+        "name": "rustc",
+        "command": [
+          "rustc",
+          "--version"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "rustc.log",
+        "started_at": "2026-11-13T20:30:51.993030+00:00",
+        "finished_at": "2026-11-13T20:30:52.000541+00:00"
+      },
+      {
+        "name": "cargo",
+        "command": [
+          "cargo",
+          "--version"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "cargo.log",
+        "started_at": "2026-11-13T20:30:52.000663+00:00",
+        "finished_at": "2026-11-13T20:30:52.004085+00:00"
+      },
+      {
+        "name": "clippy-version",
+        "command": [
+          "cargo",
+          "clippy",
+          "--version"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "clippy-version.log",
+        "started_at": "2026-11-13T20:30:52.004130+00:00",
+        "finished_at": "2026-11-13T20:30:52.019498+00:00"
+      },
+      {
+        "name": "baseline-fmt",
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "baseline-fmt.log",
+        "started_at": "2026-11-13T20:30:52.019575+00:00",
+        "finished_at": "2026-11-13T20:30:52.133114+00:00"
+      },
+      {
+        "name": "baseline-clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--offline",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "baseline-clippy.log",
+        "started_at": "2026-11-13T20:30:52.133269+00:00",
+        "finished_at": "2026-11-13T20:30:58.508245+00:00"
+      },
+      {
+        "name": "baseline-tests",
+        "command": [
+          "cargo",
+          "test",
+          "--workspace",
+          "--locked",
+          "--offline"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "baseline-tests.log",
+        "started_at": "2026-11-13T20:30:58.508407+00:00",
+        "finished_at": "2026-11-13T20:31:07.588049+00:00"
+      },
+      {
+        "name": "baseline-packaging",
+        "command": [
+          "bash",
+          "scripts/package-release-test.sh"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "baseline-packaging.log",
+        "started_at": "2026-11-13T20:31:07.588259+00:00",
+        "finished_at": "2026-11-13T20:31:07.752059+00:00"
+      },
+      {
+        "name": "warning-clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--offline",
+          "--message-format=json"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 0,
+        "log": "warning-clippy.log",
+        "started_at": "2026-11-13T20:31:07.752208+00:00",
+        "finished_at": "2026-11-13T20:31:09.367750+00:00"
+      },
+      {
+        "name": "negative-clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--offline",
+          "--message-format=json",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/tmp/bourso-ci-frozen-native/source",
+        "returncode": 101,
+        "log": "negative-clippy.log",
+        "started_at": "2026-11-13T20:31:09.369017+00:00",
+        "finished_at": "2026-11-13T20:31:10.934808+00:00"
+      }
+    ],
+    "negative_diagnostic": "clippy::identity_op",
+    "source_hashes": "source-hashes.json"
+  },
+  "remote_ci": "NOT RUN",
+  "provenance": "local source hashes only; coordinator must freeze candidate for independent acceptance",
+  "inventory": {
+    "actions": [
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "./.github/workflows/coverage.yml"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564"
+      },
+      {
+        "workflow": "cicd.yml",
+        "uses": "slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0"
+      },
+      {
+        "workflow": "coverage.yml",
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+      },
+      {
+        "workflow": "coverage.yml",
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+      },
+      {
+        "workflow": "coverage.yml",
+        "uses": "codecov/codecov-action@84508663e988701840491b86de86b666e8a86bed"
+      },
+      {
+        "workflow": "scorecard.yml",
+        "uses": "actions/checkout@93ea575cb5d8a053eaa0ac8fa3b40d7e05a33cc8"
+      },
+      {
+        "workflow": "scorecard.yml",
+        "uses": "ossf/scorecard-action@0864cf19026789058feabb7e87baa5f140aac736"
+      },
+      {
+        "workflow": "scorecard.yml",
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+      },
+      {
+        "workflow": "scorecard.yml",
+        "uses": "github/codeql-action/upload-sarif@17573ee1cc1b9d061760f3a006fc4aac4f944fd5"
+      }
+    ],
+    "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm@sha256:86d9228ec0744191b45ec91e2bb9a0dd7d7bfd4c4f01ef47abb78032ddddf1c7",
+    "release_dag": {
+      "gates": [],
+      "coverage": [],
+      "build": [
+        "gates",
+        "coverage"
+      ],
+      "subjects": [
+        "build"
+      ],
+      "publish": [
+        "gates",
+        "coverage",
+        "subjects"
+      ],
+      "provenance": [
+        "subjects",
+        "publish"
+      ]
+    }
+  },
+  "source_negative_controls": [
+    {
+      "name": "lint_tolerated",
+      "status": "PASS",
+      "rejected": "cicd.yml: hidden failure tolerance"
+    },
+    {
+      "name": "lint_masked",
+      "status": "PASS",
+      "rejected": "mandatory gate commands/order changed"
+    },
+    {
+      "name": "gate_skipped",
+      "status": "PASS",
+      "rejected": "gates: bypass/condition changed"
+    },
+    {
+      "name": "publish_bypass",
+      "status": "PASS",
+      "rejected": "publish: bypass/condition changed"
+    },
+    {
+      "name": "missing_gate_edge",
+      "status": "PASS",
+      "rejected": "build: release DAG changed"
+    },
+    {
+      "name": "wrong_sha",
+      "status": "PASS",
+      "rejected": "checkout must use exact event SHA"
+    },
+    {
+      "name": "floating_action",
+      "status": "PASS",
+      "rejected": "coverage.yml: unreviewed/nonimmutable action actions/checkout@v4"
+    },
+    {
+      "name": "write_build",
+      "status": "PASS",
+      "rejected": "cicd.yml/build: permissions"
+    },
+    {
+      "name": "persisted_credentials",
+      "status": "PASS",
+      "rejected": "checkout persists credentials"
+    },
+    {
+      "name": "bank_secret",
+      "status": "PASS",
+      "rejected": "cicd.yml: unreviewed secret reference"
+    },
+    {
+      "name": "inherited_secrets",
+      "status": "PASS",
+      "rejected": "reusable workflow must not inherit secrets"
+    },
+    {
+      "name": "floating_image",
+      "status": "PASS",
+      "rejected": "devcontainer image digest changed"
+    },
+    {
+      "name": "unconfined_container",
+      "status": "PASS",
+      "rejected": "devcontainer privilege/seccomp override"
+    }
+  ],
+  "config_hashes": {
+    ".github/workflows/cicd.yml": "95605185775c63fc82c2d58d73e911eb033a5a1b2eca5292fb93bd6bf4b2643b",
+    ".github/workflows/coverage.yml": "2d6ad5f41702b65355183e7e69669ba0dee5b1ea95d0744527a0a29ed763b244",
+    ".github/workflows/scorecard.yml": "a07d9e621ea2d50f754878c4bf5b24cd09963265a5bf9b37f48d0e49b13550b5",
+    ".devcontainer/devcontainer.json": "2ee74da38b4753ba7cce7d683ccb4e569cdb557b91d631b61b3236e3e1141f00",
+    "scripts/test-ci-local.py": "86e333e96d35c36b0aee23ee88c7ff9c3283a4aed494e5230bf952ad7ad6ae0f"
+  },
+  "status": "PASS"
+}

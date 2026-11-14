@@ -1,0 +1,222 @@
+{
+  "scope": [
+    ".4",
+    ".6",
+    ".7",
+    ".24",
+    ".26"
+  ],
+  "id_to_requirement_mapping": "not provided; not inferred",
+  "decision": "partial business evidence only; no API contract established; no closure",
+  "sources": [
+    {
+      "id": "S1",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-gerer-mon-compte-bourse/passage-d-ordre/question/quels-sont-les-differents-types-d-ordres-161",
+      "title": "Quels sont les différents types d'ordres ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:52:58+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "disponible uniquement pour les marché Euronext Paris, Euronext Amsterdam et Euronext Bruxelles",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-gerer-mon-compte-bourse/passage-d-ordre/question/quelles-sont-les-conditions-de-passage-d-ordre-sur-les-marches-europeens-70285167",
+      "title": "Quelles sont les conditions de passage d'ordre sur les marchés européens ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:00+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Ordre limité avec une validité jour uniquement",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-gerer-mon-compte-bourse/passage-d-ordre/question/comment-passer-consulter-ou-annuler-un-ordre-en-bourse-198",
+      "title": "Comment passer, consulter ou annuler un ordre en bourse ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:01+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "cliquez sur \"Annuler\" et enfin \"Confirmer\"",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-gerer-mon-compte-bourse/passage-d-ordre/question/y-a-t-il-des-frais-lorsqu-un-ordre-de-bourse-tombe-en-fin-de-validite-25269483",
+      "title": "Y a-t-il des frais lorsqu'un ordre de Bourse tombe en fin de validité ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:02+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Tombé en fin de validité signifie que l'ordre est arrivé à expiration",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-gerer-mon-compte-bourse/mes-documents-et-releves-bourse/question/qu-est-ce-qu-un-avis-d-opere-159",
+      "title": "Qu'est-ce qu'un avis d'opéré ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:04+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Il est édité un avis par opération.",
+          "verified_in_response": true
+        },
+        {
+          "text": "dès le premier jour ouvré suivant l'opération",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "url": "https://www.boursobank.com/aide-en-ligne/banque/virement/generalites/question/quel-est-le-montant-maximum-pour-un-virement-294",
+      "title": "Quel est le montant maximum pour un virement ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:05+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Par défaut, chaque compte bancaire dispose d’un plafond de virement de 15 000 €.",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S7",
+      "url": "https://www.boursobank.com/aide-en-ligne/banque/virement/generalites/question/comment-fonctionne-le-plafond-de-virement-57927627",
+      "title": "Comment fonctionne le plafond de virement ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:06+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Les virements permanents programmés n'impactent pas le plafond de virement de votre compte",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S8",
+      "url": "https://www.boursobank.com/aide-en-ligne/banque/virement/virement-sepa-classique/question/comment-effectuer-un-virement-classique-sepa-73063596",
+      "title": "Comment effectuer un Virement classique (SEPA) ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:07+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Par défaut, votre virement est réalisé en virement instantané",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S9",
+      "url": "https://www.boursobank.com/aide-en-ligne/bourse/comment-investir-en-bourse/fonctionnement-de-la-bourse/question/comment-s-organise-une-seance-boursiere-et-ou-trouver-les-horaires-des-differents-marches-178",
+      "title": "Comment s'organise une séance boursière et où trouver les horaires des différents marchés ? | BoursoBank",
+      "accessed_at": "2026-11-14T00:53:09+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_help",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Valeurs cotées en continu : 17h35 à 17h40",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "url": "https://www.boursorama.com/bourse/politique-execution/",
+      "title": "Horaires d'ouverture et de fermeture des bourses mondiales - Boursorama",
+      "accessed_at": "2026-11-14T00:53:10+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_portal",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "15H30 - 22H00 (heure française)",
+          "verified_in_response": true
+        },
+        {
+          "text": "Cette liste ne constitue en aucun cas un engagement de BoursoBank.",
+          "verified_in_response": true
+        }
+      ]
+    },
+    {
+      "id": "S11",
+      "url": "https://www.boursorama.com/bourse/actualites/calendriers/",
+      "title": "Calendrier bourse et économie - Boursorama",
+      "accessed_at": "2026-11-14T00:53:11+01:00",
+      "http_status": "200",
+      "source_kind": "official_public_portal",
+      "published_at": null,
+      "updated_at": null,
+      "method": "public GET; curl -q; no cookies/auth supplied; no redirect following",
+      "short_quotes": [
+        {
+          "text": "Macroéconomique",
+          "verified_in_response": true
+        },
+        {
+          "text": "Sociétés cotées",
+          "verified_in_response": true
+        }
+      ]
+    }
+  ],
+  "blocked_or_unfollowed": [
+    {
+      "url": "https://html.duckduckgo.com/html/?q=site%3Aboursobank.com%2Faide-en-ligne+ordre+statut+validit%C3%A9",
+      "reason": "challenge detected on initial search; stopped host; no result used"
+    },
+    {
+      "description": "Guide des ordres: only found behind authenticated client feature-redirect links",
+      "reason": "not requested; no extracted target requested"
+    }
+  ]
+}

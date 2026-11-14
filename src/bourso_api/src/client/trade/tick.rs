@@ -1,24 +1,22 @@
-use serde::{Serialize, Deserialize};
-use anyhow::{Context, Result};
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::client::BoursoWebClient;
 
 impl BoursoWebClient {
-
     /// Get the ticks for a given symbol, length and period
-    /// 
+    ///
     /// Ticks are quotes for a given symbol, period (time period interval) and length (the time frame)
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `symbol` - The symbol id of the stock (e.g: '1rTCW8')
     /// * `length` - The length period of the stock (e.g: '30' for 30 days)
     /// * `period` - The interval of the stock (e.g: '0' for default interval)
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A struct containing the quotes for the given symbol, period and length
-    #[cfg(not(tarpaulin_include))]
     pub async fn get_ticks(&self, symbol: &str, length: i64, period: i64) -> Result<GetTicksEOD> {
         let url = format!(
             "https://www.boursorama.com/bourse/action/graph/ws/GetTicksEOD?symbol={}&length={}&period={}&guid=",
@@ -27,21 +25,27 @@ impl BoursoWebClient {
             period
         );
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .header("Content-Type", "application/json;charset=UTF-8")
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = response.status();
 
-        let response = response.text().await?;
+        let response = response.text().await.map_err(reqwest::Error::without_url)?;
 
         if status_code != 200 {
-            return Err(anyhow::anyhow!("Failed to get ticks response ({}): {}", status_code, response));
+            return Err(anyhow::anyhow!(
+                "Failed to get ticks response, status code: {}",
+                status_code
+            ));
         }
-        
+
         let response: GetTicksEOD = serde_json::from_str(&response)
-            .context("Failed to parse get ticks response")?;
+            .map_err(|e| crate::client::safe_json_error("Failed to parse get ticks response", e))?;
 
         Ok(response)
     }
@@ -77,6 +81,21 @@ impl D {
         self.last_quote.clone()
     }
 
+    /// Get the latest quote, preferring `qd` over the last entry in `QuoteTab`.
+    /// Quotes with non-finite OHLC prices are not usable. This does not search
+    /// earlier history when the final entry is invalid.
+    pub fn get_latest_quote(&self) -> Option<QuoteTab> {
+        self.last_quote
+            .as_ref()
+            .filter(|quote| quote.has_finite_prices())
+            .or_else(|| {
+                self.quote_tab
+                    .last()
+                    .filter(|quote| quote.has_finite_prices())
+            })
+            .cloned()
+    }
+
     /// Get the second to last day's quote
     pub fn get_second_to_last_quote(&self) -> Option<QuoteTab> {
         self.second_to_last_quote.clone()
@@ -87,20 +106,45 @@ impl D {
         self.quote_tab.clone()
     }
 
-    /// Get the highest value of the quotes for the given period and length
-    pub fn get_highest_value(&self) -> f64 {
-        self.quote_tab.iter().map(|quote| quote.high).fold(0.0, f64::max)
+    fn validated_quotes(&self) -> Result<&[QuoteTab]> {
+        anyhow::ensure!(
+            !self.quote_tab.is_empty(),
+            "Cannot aggregate an empty quote series"
+        );
+        anyhow::ensure!(
+            self.quote_tab.iter().all(QuoteTab::has_finite_prices),
+            "Cannot aggregate quotes with non-finite prices"
+        );
+        Ok(&self.quote_tab)
     }
 
-    /// Get the lowest value of the quotes for the given period and length
-    pub fn get_lowest_value(&self) -> f64 {
-        self.quote_tab.iter().map(|quote| quote.low).fold(f64::MAX, f64::min)
+    /// Get the highest value of the quotes for the given period and length.
+    /// Returns an error for empty series or non-finite OHLC prices.
+    pub fn get_highest_value(&self) -> Result<f64> {
+        self.validated_quotes()?
+            .iter()
+            .map(|quote| quote.high)
+            .reduce(f64::max)
+            .ok_or_else(|| anyhow::anyhow!("Cannot aggregate an empty quote series"))
     }
 
-    /// Get the average value of the quotes on closing for the given period and length
-    pub fn get_average_value(&self) -> f64 {
-        let sum: f64 = self.quote_tab.iter().map(|quote| quote.close).sum();
-        sum / self.quote_tab.len() as f64
+    /// Get the lowest value of the quotes for the given period and length.
+    /// Returns an error for empty series or non-finite OHLC prices.
+    pub fn get_lowest_value(&self) -> Result<f64> {
+        self.validated_quotes()?
+            .iter()
+            .map(|quote| quote.low)
+            .reduce(f64::min)
+            .ok_or_else(|| anyhow::anyhow!("Cannot aggregate an empty quote series"))
+    }
+
+    /// Get the average closing value for the given period and length.
+    /// Returns an error for empty series, non-finite OHLC prices, or sum overflow.
+    pub fn get_average_value(&self) -> Result<f64> {
+        let quotes = self.validated_quotes()?;
+        let sum: f64 = quotes.iter().map(|quote| quote.close).sum();
+        anyhow::ensure!(sum.is_finite(), "Quote closing-price sum overflowed");
+        Ok(sum / quotes.len() as f64)
     }
 
     /// Get the volume of the quotes for the given period and length
@@ -126,9 +170,134 @@ pub struct QuoteTab {
     pub volume: i64,
 }
 
+impl QuoteTab {
+    fn has_finite_prices(&self) -> bool {
+        self.open.is_finite()
+            && self.high.is_finite()
+            && self.low.is_finite()
+            && self.close.is_finite()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_aggregates_return_errors() {
+        let quotes = D::default();
+        assert!(quotes.get_highest_value().is_err());
+        assert!(quotes.get_lowest_value().is_err());
+        assert!(quotes.get_average_value().is_err());
+    }
+
+    fn quote(value: f64) -> QuoteTab {
+        QuoteTab {
+            open: value,
+            high: value + 1.0,
+            low: value - 1.0,
+            close: value,
+            volume: 10,
+            ..QuoteTab::default()
+        }
+    }
+
+    #[test]
+    fn one_two_and_negative_quote_aggregates() {
+        for (values, high, low, average) in [
+            (vec![4.0], 5.0, 3.0, 4.0),
+            (vec![4.0, 8.0], 9.0, 3.0, 6.0),
+            (vec![-8.0, -4.0], -3.0, -9.0, -6.0),
+        ] {
+            let quotes = D {
+                quote_tab: values.into_iter().map(quote).collect(),
+                ..D::default()
+            };
+            assert_eq!(quotes.get_highest_value().unwrap(), high);
+            assert_eq!(quotes.get_lowest_value().unwrap(), low);
+            assert_eq!(quotes.get_average_value().unwrap(), average);
+        }
+    }
+
+    #[test]
+    fn non_finite_prices_are_rejected_in_every_ohlc_field() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in 0..4 {
+                let mut invalid_quote = quote(4.0);
+                match field {
+                    0 => invalid_quote.open = invalid,
+                    1 => invalid_quote.high = invalid,
+                    2 => invalid_quote.low = invalid,
+                    _ => invalid_quote.close = invalid,
+                }
+                // Invalid prices must not be hidden by a valid neighbor or qd.
+                let quotes = D {
+                    quote_tab: vec![quote(8.0), invalid_quote.clone()],
+                    last_quote: Some(quote(10.0)),
+                    ..D::default()
+                };
+                assert!(quotes.get_highest_value().is_err());
+                assert!(quotes.get_lowest_value().is_err());
+                assert!(quotes.get_average_value().is_err());
+
+                let fallback = quote(2.0);
+                let quotes = D {
+                    quote_tab: vec![fallback.clone()],
+                    last_quote: Some(invalid_quote.clone()),
+                    ..D::default()
+                };
+                assert_eq!(quotes.get_latest_quote(), Some(fallback));
+                let quotes = D {
+                    quote_tab: vec![quote(2.0), invalid_quote],
+                    ..D::default()
+                };
+                assert_eq!(quotes.get_latest_quote(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn average_overflow_returns_error_instead_of_infinity() {
+        let quotes = D {
+            quote_tab: vec![quote(f64::MAX), quote(f64::MAX)],
+            ..D::default()
+        };
+        assert!(quotes.get_average_value().is_err());
+        assert_eq!(quotes.get_highest_value().unwrap(), f64::MAX);
+        assert_eq!(quotes.get_lowest_value().unwrap(), f64::MAX);
+    }
+
+    #[test]
+    fn latest_quote_prefers_qd_then_final_history_entry() {
+        let first = quote(2.0);
+        let last = quote(4.0);
+        let qd = quote(8.0);
+        let mut quotes = D::default();
+        assert_eq!(quotes.get_latest_quote(), None);
+        assert_eq!(quotes.get_last_quote(), None);
+        quotes.last_quote = Some(qd.clone());
+        assert_eq!(quotes.get_latest_quote(), Some(qd.clone()));
+        quotes.quote_tab = vec![first, last.clone()];
+        assert_eq!(quotes.get_latest_quote(), Some(qd.clone()));
+        assert_eq!(quotes.get_last_quote(), Some(qd));
+        quotes.last_quote = None;
+        assert_eq!(quotes.get_latest_quote(), Some(last));
+        assert_eq!(quotes.get_last_quote(), None);
+        quotes.last_quote = Some(quote(f64::INFINITY));
+        quotes.quote_tab.clear();
+        assert_eq!(quotes.get_latest_quote(), None);
+        assert!(quotes.get_last_quote().unwrap().close.is_infinite());
+    }
+
+    #[test]
+    fn volume_keeps_existing_empty_and_sum_contract() {
+        assert_eq!(D::default().get_volume(), 0);
+        let quotes = D {
+            quote_tab: vec![quote(2.0), quote(4.0)],
+            ..D::default()
+        };
+        assert_eq!(quotes.get_volume(), 20);
+    }
 
     #[test]
     fn test_get_ticks() {
@@ -300,9 +469,9 @@ mod tests {
         assert_eq!(response.d.symbol_id, "1rTEWLD");
         assert_eq!(response.d.xperiod, 0);
         assert_eq!(response.d.quote_tab.len(), 19);
-        assert_eq!(response.d.get_highest_value(), 30.375);
-        assert_eq!(response.d.get_lowest_value(), 29.1);
-        assert_eq!(response.d.get_average_value(), 29.618210526315796);
+        assert_eq!(response.d.get_highest_value().unwrap(), 30.375);
+        assert_eq!(response.d.get_lowest_value().unwrap(), 29.1);
+        assert_eq!(response.d.get_average_value().unwrap(), 29.618210526315796);
         assert_eq!(response.d.get_volume(), 485117);
         assert_eq!(response.d.get_last_quote(), None);
         assert_eq!(response.d.get_second_to_last_quote(), None);

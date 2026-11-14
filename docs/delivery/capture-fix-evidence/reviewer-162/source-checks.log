@@ -1,0 +1,12 @@
+PASS existing parallel ON/OFF test byte-identical to HEAD
+PASS unchanged Cargo.lock
+PASS unchanged Cargo.toml
+PASS unchanged src/bourso_api/Cargo.toml
+PASS unchanged src/bourso_api/src/client/transfer/money_tests.rs
+PASS Cargo.lock archive checksum tracing-core-0.1.33 e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c
+PASS extracted locked source tracing-core-0.1.33 src/callsite.rs
+PASS extracted locked source tracing-core-0.1.33 src/dispatcher.rs
+PASS extracted locked source tracing-core-0.1.33 src/subscriber.rs
+PASS Cargo.lock archive checksum tracing-0.1.41 784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0
+PASS extracted locked source tracing-0.1.41 src/macros.rs
+PASS extracted locked source tracing-0.1.41 src/lib.rs

@@ -1,0 +1,28 @@
+   Compiling bourso_api v0.6.0 (/home/jmercier/Codes/me/bourso-api/src/bourso_api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.78s
+     Running unittests src/lib.rs (target/debug/deps/bourso_api-1588f756708a268b)
+
+running 2 tests
+
+thread 'client::transfer::init_tests::empty_location_reference_stops_transfer_money_before_next_request' (1912890) panicked at src/bourso_api/src/client/transfer/init_tests.rs:204:9:
+assertion `left == right` failed: empty reference must not reach flow extraction
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'client::transfer::init_tests::empty_location_reference_stops_transfer_funds_before_next_request' (1912889) panicked at src/bourso_api/src/client/transfer/init_tests.rs:204:9:
+assertion `left == right` failed: empty reference must not reach flow extraction
+  left: 2
+ right: 1
+test client::transfer::init_tests::empty_location_reference_stops_transfer_money_before_next_request ... FAILED
+test client::transfer::init_tests::empty_location_reference_stops_transfer_funds_before_next_request ... FAILED
+
+failures:
+
+failures:
+    client::transfer::init_tests::empty_location_reference_stops_transfer_funds_before_next_request
+    client::transfer::init_tests::empty_location_reference_stops_transfer_money_before_next_request
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 116 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p bourso_api --lib`

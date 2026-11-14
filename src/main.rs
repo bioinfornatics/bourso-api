@@ -10,8 +10,6 @@ use clap::{
 async fn main() -> Result<()> {
     const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
-    init_logger()?;
-
     let account_arg = Arg::new("account")
         .short('a')
         .long("account")
@@ -20,36 +18,22 @@ async fn main() -> Result<()> {
         .value_parser(ValueParser::new(validate_account_id))
         .required(true);
 
+    let args: Vec<_> = std::env::args_os().collect();
+    // Even clap diagnostics can echo invalid financial values; suppress them.
+    let sensitive = args
+        .iter()
+        .any(|arg| arg == "trade" || arg == "transfer" || arg == "financial-review");
+    if !sensitive {
+        init_logger()?;
+    }
     let matches = Command::new("bourso")
         .version(VERSION.unwrap_or("0.0.1"))
         .author("@azerpas")
         .about("BoursoBank/Boursorama CLI")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .subcommand(
-            Command::new("accounts")
-                .about("Manage your saving accounts")
-                .arg(
-                    Arg::new("bank")
-                        .long("banking")
-                        .help("List all your base banking accounts")
-                )
-                .arg(
-                    Arg::new("saving")
-                        .long("saving")
-                        .help("List all your saving accounts")
-                )
-                .arg(
-                    Arg::new("trading")
-                        .long("trading")
-                        .help("List all your trading accounts")
-                )
-                .arg(
-                    Arg::new("loans")
-                        .long("loans")
-                        .help("List all your loans")
-                )
-        )
+        .subcommand(bourso_cli::account_filters::command())
+        .subcommand(bourso_cli::financial_guard::review_command())
         .subcommand(
             Command::new("config")
                 .about("Configure BoursoBank/Boursorama CLI")
@@ -205,32 +189,7 @@ async fn main() -> Result<()> {
                         )
                 )
         )
-        .subcommand(
-            Command::new("transfer")
-                .about("Make a transfer between your accounts")
-                .arg(account_arg.clone())
-                .arg(
-                    Arg::new("to_account")
-                        .long("to")
-                        .help(
-                            r#"The destination account id as an hexadecimal string (32 characters).
-    You can get this info with the command `bourso accounts`"#
-                        )
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("amount")
-                        .long("amount")
-                        .help("The amount to transfer")
-                        .required(true)
-                )
-                .arg(
-                    Arg::new("reason")
-                        .long("reason")
-                        .help("The reason for the transfer (max 50 characters)")
-                        .required(false)
-                )
-        )
+        .subcommand(bourso_cli::money::command(account_arg.clone()))
         .arg(
             Arg::new("credentials")
                 .long("credentials")
@@ -238,9 +197,40 @@ async fn main() -> Result<()> {
                 .value_parser(clap::value_parser!(String))
                 .required(false)
         )
-        .get_matches();
+        .try_get_matches_from(args);
+    let matches = match matches {
+        Ok(matches) => matches,
+        Err(error) => {
+            if sensitive
+                && !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                )
+            {
+                bourso_cli::financial_guard::Report::not_emitted().print();
+                eprintln!("Check command options (including --amount for transfers); values omitted for privacy.");
+                std::process::exit(2);
+            }
+            error.exit();
+        }
+    };
 
-    bourso_cli::parse_matches(matches).await?;
+    let financial = bourso_cli::financial_guard::is_financial(&matches);
+    // Financial commands intentionally install no tracing subscriber: upstream
+    // diagnostics can carry identifiers or raw provider responses at any level.
+    let result = bourso_cli::parse_matches(matches).await;
+    if financial {
+        if let Err(error) = result {
+            let fallback = bourso_cli::financial_guard::Report::not_emitted();
+            let report = error
+                .downcast_ref::<bourso_cli::financial_guard::Report>()
+                .unwrap_or(&fallback);
+            report.print();
+            std::process::exit(report.exit_code().into());
+        }
+    } else {
+        result?;
+    }
 
     Ok(())
 }

@@ -1,112 +1,183 @@
-# Inspired by https://github.com/Swatinem/rust-cache/blob/master/.github/workflows/simple.yml
 name: CI/CD
 
-on:  
-  push:    
-    tags: 
-      - v*.*.*
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
 
+# Fork PRs and all compilation jobs receive no write permission or secrets.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: 1.96.1
 
 jobs:
-  build:
-    outputs:
-      hash-ubuntu-latest: ${{ steps.hash.outputs.hash-ubuntu-latest }}
-      hash-macos-latest: ${{ steps.hash.outputs.hash-macos-latest }}
-      hash-windows-latest: ${{ steps.hash-windows.outputs.hash-windows-latest }}
+  gates:
+    name: Rust 1.96.1 gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    name: Bourso CLI ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-
+        os: [ubuntu-24.04, macos-15-intel, windows-2022]
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-
-      # When rustup is updated, it tries to replace its binary, which on Windows is somehow locked.
-      # This can result in the CI failure, see: https://github.com/rust-lang/rustup/issues/3029
-      - run: |
-          rustup set auto-self-update disable
-          rustup toolchain install stable --profile minimal
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          toolchain: stable
-          components: rustfmt
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check and test
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned compiler
         run: |
-          cargo check
-          cargo test
-          cargo test -p bourso_api
-      
+          rustup set auto-self-update disable
+          rustup toolchain install 1.96.1 --profile minimal --component rustfmt --component clippy
+      - name: Format both crates
+        run: cargo +1.96.1 fmt --all -- --check
+      - name: Lint both crates (warnings are errors)
+        run: cargo +1.96.1 clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test CLI and API (hermetic fixtures; no bank credentials)
+        run: cargo +1.96.1 test --workspace --locked
+      - name: Verify packaging using inert fixtures
+        run: bash scripts/package-release-test.sh
+
+  # Same-revision local reusable workflow keeps the existing instrumented API
+  # coverage/report script as a required release gate, without inheriting secrets.
+  coverage:
+    uses: ./.github/workflows/coverage.yml
+    permissions:
+      contents: read
+
+  build:
+    name: Package ${{ matrix.platform }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [gates, coverage]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            target: x86_64-unknown-linux-gnu
+            binary: bourso-cli
+          - os: macos-15-intel
+            platform: darwin
+            target: x86_64-apple-darwin
+            binary: bourso-cli
+          - os: windows-2022
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            binary: bourso-cli.exe
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned compiler and target
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install 1.96.1 --profile minimal --target "$CARGO_BUILD_TARGET"
       - name: Build release
-        run: cargo build --release
+        run: cargo +1.96.1 build --release --locked -p bourso-cli --target "$CARGO_BUILD_TARGET"
+      # Git Bash and Python are available on all three hosted runners. This uses
+      # the SAME packager for Windows zip and Unix tar; no binary is executed.
+      - name: Include project license and upstream dependency notices
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BINARY: ${{ matrix.binary }}
+        run: bash scripts/package-release.sh "$PLATFORM" "target/$CARGO_BUILD_TARGET/release/$BINARY" dist
+      - name: Transfer only distributable archives to publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Rename and make executabe Mac Release
-        if: matrix.os == 'macos-latest'
-        run: |
-          chmod +x target/release/bourso-cli
-          tar -czvf target/release/bourso-cli-darwin.tar.gz -C target/release bourso-cli
-
-      - name: Build Linux Release
-        if: matrix.os == 'ubuntu-latest'
-        run: tar -czvf target/release/bourso-cli-linux.tar.gz -C target/release bourso-cli
-
-      - name: Generate subject for Unix-like
-        if: matrix.os != 'windows-latest'
+  subjects:
+    name: Hash final distribution archives
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the exact expected subjects and hash archives (not raw binaries)
         id: hash
+        shell: bash
         run: |
           set -euo pipefail
-          if [ ${{ matrix.os }} = "ubuntu-latest" ]; then
-            echo "hash-${{ matrix.os }}=$(sha256sum target/release/bourso-cli | base64 -w0)" >> "$GITHUB_OUTPUT"
-          elif [ ${{ matrix.os }} = "macos-latest" ]; then
-            echo "hash-${{ matrix.os }}=$(shasum -a 256 target/release/bourso-cli | base64)" >> "$GITHUB_OUTPUT"
-          fi
+          cd dist
+          test "$(find . -type f | wc -l)" -eq 3
+          sha256sum bourso-cli-linux.tar.gz bourso-cli-darwin.tar.gz bourso-cli-windows.zip > SHA256SUMS
+          echo "hashes=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
 
-      - name: Generate subject for Windows
-        if: matrix.os == 'windows-latest'
-        id: hash-windows
-        run: |
-          # Stop script execution on errors (similar to set -e in Unix)
-          $ErrorActionPreference = "Stop"
-          $hash = Get-FileHash -Path "target/release/bourso-cli.exe" -Algorithm SHA256
-          $hashString = $hash.Hash.ToLower() + " target/release/bourso-cli.exe"
-          $base64Hash = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hashString))
-          echo "hash-windows-latest=$base64Hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.0.4
-        if: startsWith(github.ref, 'refs/tags/')
+  publish:
+    name: Publish draft release (no source execution)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [gates, coverage, subjects]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Recheck transported assets
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564 # v2.0.4 (peeled commit)
         with:
           draft: true
+          fail_on_unmatched_files: true
           files: |
-            target/release/bourso-cli-linux.tar.gz
-            target/release/bourso-cli-darwin.tar.gz
-            target/release/bourso-cli.exe
+            dist/bourso-cli-linux.tar.gz
+            dist/bourso-cli-darwin.tar.gz
+            dist/bourso-cli-windows.zip
+            dist/SHA256SUMS
 
   provenance:
-    needs: [build]
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    needs: [subjects, publish]
     permissions:
-      actions: read # To read the workflow path.
-      id-token: write # To sign the provenance.
-      contents: write # To add assets to a release.
+      actions: read
+      id-token: write # SLSA signing only, never exposed to compilation.
+      contents: write # Attach provenance to the draft release only.
+    # Intentional exception: the SLSA verifier requires the generator reference
+    # to be a version tag (not a commit SHA). Keep this audited semver exception.
+    # https://github.com/slsa-framework/slsa-github-generator/blob/v2.1.0/internal/builders/generic/README.md
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      provenance-name: provenance-id-${{ matrix.os }}.intoto.jsonl
-      base64-subjects: "${{ needs.build.outputs[format('hash-{0}', matrix.os)] }}"
-      upload-assets: true # Optional: Upload to a new release
-      draft-release: true # Optional: Upload to a draft release
+      provenance-name: provenance.intoto.jsonl
+      base64-subjects: ${{ needs.subjects.outputs.hashes }}
+      upload-assets: true
+      draft-release: true
+
+# Branch protection / required-check configuration is external to this file and
+# has NOT been verified. A failed gate blocks this DAG, not an unconfigured merge.

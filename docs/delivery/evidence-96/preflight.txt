@@ -1,0 +1,1 @@
+Initial capture exited 2: schema type mismatch (environment values were objects, schema requires strings). No tests ran. Scope corrected to string values before successful capture.

@@ -1,0 +1,68 @@
+[
+  {
+    "check": "existing-package-tests",
+    "command": [
+      "bash",
+      "scripts/package-release-test.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "check": "package-linux",
+    "command": [
+      "bash",
+      "scripts/package-release.sh",
+      "linux",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/binary.fixture",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/final-evidence/legal-run/linux",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/metadata.snapshot.json"
+    ],
+    "exit": 0
+  },
+  {
+    "check": "package-darwin",
+    "command": [
+      "bash",
+      "scripts/package-release.sh",
+      "darwin",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/binary.fixture",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/final-evidence/legal-run/darwin",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/metadata.snapshot.json"
+    ],
+    "exit": 0
+  },
+  {
+    "check": "package-windows",
+    "command": [
+      "bash",
+      "scripts/package-release.sh",
+      "windows",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/binary.fixture",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/final-evidence/legal-run/windows",
+      "/home/jmercier/Codes/me/bourso-api/docs/delivery/legal-inputs/metadata.snapshot.json"
+    ],
+    "exit": 0
+  },
+  {
+    "check": "fmt-before",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0
+  },
+  {
+    "check": "fmt-after",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0
+  }
+]

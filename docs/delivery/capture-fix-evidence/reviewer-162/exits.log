@@ -1,0 +1,7 @@
+workspace-tests=0
+cold-child=0
+stress=0
+api-parallel-1=0
+api-parallel-2=0
+fmt=0
+clippy=0

@@ -1,0 +1,33 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/bourso_api-1588f756708a268b)
+
+running 15 tests
+test client::transfer::money_tests::decimal_policy_and_boundaries_are_exact ... ok
+test client::transfer::reason_tests::reason_error_labels_the_local_byte_policy_not_a_provider_contract ... ok
+test client::transfer::reason_tests::pure_local_policy_preserves_existing_byte_boundaries ... ok
+test client::transfer::submission_tests::progress_metadata_retains_compatibility_without_success_claims ... ok
+test client::transfer::reason_tests::existing_reason_byte_boundaries_gate_both_public_streams_before_requests ... ok
+test client::transfer::money_tests::invalid_float_never_contacts_local_listener ... ok
+test client::transfer::init_tests::empty_location_reference_stops_transfer_funds_before_next_request ... ok
+test client::transfer::init_tests::empty_location_reference_stops_transfer_money_before_next_request ... ok
+
+thread 'client::transfer::money_tests::actual_multipart_payload_preserves_cents_without_rounding' (1914160) panicked at src/bourso_api/src/client/transfer/money_tests.rs:236:9:
+assertion failed: logs.contains(&format!("Initiating transfer of {} EUR",
+            expected.replace(',', ".")))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test client::transfer::money_tests::actual_multipart_payload_preserves_cents_without_rounding ... FAILED
+test client::transfer::init_tests::missing_and_empty_flow_instances_stop_before_debit_for_both_public_streams ... ok
+test client::transfer::init_tests::missing_and_short_location_references_stop_both_public_streams ... ok
+test client::transfer::init_tests::nonempty_reference_preserves_positional_extraction_and_every_submit_stage ... ok
+test client::transfer::outcome_tests::confirmation_response_is_received_but_not_a_validated_receipt ... ok
+test client::transfer::submission_tests::final_http_200_never_claims_execution_for_either_public_stream ... ok
+test client::transfer::outcome_tests::final_transfer_post_errors_are_unknown_without_retry ... ok
+
+failures:
+
+failures:
+    client::transfer::money_tests::actual_multipart_payload_preserves_cents_without_rounding
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 103 filtered out; finished in 0.33s
+
+error: test failed, to rerun pass `-p bourso_api --lib`

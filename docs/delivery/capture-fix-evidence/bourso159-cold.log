@@ -1,0 +1,15 @@
+root=ThreadId(1) runtime=ThreadId(1) max=LevelFilter::TRACE
+cold-thread=ThreadId(2) no_subscriber=true max=LevelFilter::TRACE
+pre-recovery attempts=2 root=ThreadId(1) max=LevelFilter::TRACE
+CAPTURED
+message=capture-probe
+message=control-before
+message=control-after
+message=cold-target phase=3
+END_CAPTURED
+
+thread 'main' (1975487) panicked at /tmp/bourso159-cold.rs:107:5:
+assertion `left == right` failed: ON delivery after cold registration must capture once
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

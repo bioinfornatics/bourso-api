@@ -1,0 +1,13 @@
+PASS: initial state, direct invocation, private journal, zero exit unverified, repeat blocked
+PASS: explicit matched review, receipt required, no execution on review, weekly interval, reviewed history
+PASS: nonzero exit stays unknown, blocks repeat, never writes confirmation
+PASS: foreground child observed, concurrent invocation blocked, ordinary lock release
+PASS: cancel-term: live child locked, unknown journal unchanged, review/retry blocked; cancellation forwarded
+PASS: cancel-int: live child locked, unknown journal unchanged, review/retry blocked; cancellation forwarded
+PASS: cancel-hup: live child locked, unknown journal unchanged, review/retry blocked; cancellation forwarded
+PASS: crash-live: live child locked, unknown journal unchanged, review/retry blocked; supervisor killed
+PASS: killed supervisor leaves lock and unknown journal; no stale auto-delete or retry
+PASS: initial journal failure prevents execution; result write failure retains unknown and blocks retry
+PASS: no-TTY, placeholder, unsafe permissions, symlink and malformed state rejected without execution
+PASS: configured default mode reads inherited TTY; future/corrupt timestamps and empty review rejected
+PASS: all DCA tests used isolated fake executors; no bank requests

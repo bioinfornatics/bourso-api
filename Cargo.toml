@@ -2,9 +2,18 @@
 name       = "bourso-cli"
 version    = "0.6.0"
 edition    = "2021"
+rust-version = "1.96.1"
+license = "MIT"
 repository = "https://github.com/azerpas/bourso-api"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# Both crates share the root Cargo.lock, including commands run from the API directory.
+# Use --locked for builds/tests; plain cargo test selects both crates by default.
+[workspace]
+members = ["src/bourso_api"]
+default-members = [".", "src/bourso_api"]
+resolver = "2"
 
 [dependencies]
 bourso_api         = { path = "./src/bourso_api" }
@@ -18,7 +27,11 @@ serde_json         = { version = "1.0.107" }
 tracing            = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter", "json"] }
 futures-util       = { version = "0.3.31" }
-qrcode             = { version = "0.14.1" }
+qrcode             = { version = "0.14.1", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
+[dev-dependencies]
+# Exercise dependency diagnostics through the real logger, using the existing locked version.
+reqwest = { version = "0.12.12", features = ["cookies"] }

@@ -1,0 +1,333 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/bourso_cli-408ecf1384a1b894)
+
+running 28 tests
+test account_filters::tests::command_definition_is_consistent ... ok
+test financial_guard::tests::crash_child ... ignored, only spawned by abrupt_process_exit_preserves_unresolved_journal
+test account_filters::tests::no_flag_lists_all_categories ... ok
+test account_filters::tests::flags_reject_unexpected_values ... ok
+test account_filters::tests::each_flag_selects_its_category_without_a_value ... ok
+test dispatch_tests::valid_configuration_reaches_bank_boundary_without_real_operation ... ok
+test dispatch_tests::empty_quotes_return_errors_without_panicking ... ok
+test dispatch_tests::missing_customer_id_returns_before_any_quote_or_bank_work ... ok
+test dispatch_tests::public_quotes_never_load_settings_and_use_only_injected_data ... ok
+test financial_guard::tests::financial_preparation_error_releases_with_duplicate_alive ... ok
+test account_filters::tests::every_pair_of_categories_conflicts ... ok
+test financial_guard::tests::financial_owner_drop_releases_with_duplicate_alive ... ok
+test financial_guard::tests::responses_and_errors_both_preserve_replay_barrier_without_bank_data ... ok
+test financial_guard::tests::cancelled_future_keeps_journal_and_blocks_replay_after_lock_drop ... ok
+test dispatch_tests::last_accepts_qd_without_history ... ok
+test financial_guard::tests::unix_private_modes_and_readonly_journal_fail_closed ... ok
+test financial_guard::tests::symlink_and_hardlink_journals_are_not_followed ... ok
+test financial_guard::tests::readonly_directory_before_journal_write_prevents_invocation ... ok
+test settings::private_storage_tests::rotation_error_keeps_current_file_and_does_not_touch_user_directory ... ok
+test settings::private_storage_tests::log_owner_drop_releases_with_duplicate_alive ... ok
+test settings::private_storage_tests::storage_override_requires_a_nonempty_absolute_path ... ok
+test financial_guard::tests::journal_creation_failure_does_not_invoke_fake_api ... ok
+test settings::private_storage_tests::log_lock_prevents_stale_descriptor_writers_and_releases_on_drop ... ok
+test settings::private_storage_tests::log_preparation_error_releases_with_duplicate_alive ... ok
+test settings::private_storage_tests::missing_settings_are_created_once_and_explicit_saves_can_update ... ok
+test financial_guard::tests::concurrent_sessions_allow_only_one_holder_and_no_stale_lock_cleanup ... ok
+
+running 1 test
+test financial_guard::tests::abrupt_process_exit_preserves_unresolved_journal ... ok
+test settings::private_storage_tests::log_boundary_and_oversized_record_are_lossless_or_explicit_error ... ok
+
+test result: ok. 27 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/bourso_cli-df943e1c2c3942df)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/config_cli.rs (target/debug/deps/config_cli-591cc6e9e1e14c44)
+
+running 6 tests
+test fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls ... ok
+test bank_command_preserves_corrupt_config_and_reports_error ... ok
+test explicit_storage_override_takes_precedence_over_home ... ok
+test explicit_config_repairs_corrupt_json_and_ignores_credentials_override ... ok
+test invalid_storage_override_fails_without_falling_back_to_home ... ok
+test bank_commands_without_customer_id_fail_before_authentication ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/docs_walkthrough.rs (target/debug/deps/docs_walkthrough-23ed19683900f21d)
+
+running 6 tests
+test published_guides_do_not_restore_known_unsafe_permission_or_scheduler_examples ... ok
+test transfer_help_names_local_byte_policy_without_claiming_provider_contract ... ok
+test quote_help_lists_readme_contract_without_reading_credentials ... ok
+test exact_readme_quote_options_reach_real_binary_operation_help ... ok
+test readme_config_really_saves_synthetic_id_and_null_password ... ok
+test documented_quote_values_validate_before_missing_symbol_without_help ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/export_safety.rs (target/debug/deps/export_safety-c2b8c9a9dffd7bc2)
+
+running 1 test
+test explicit_export_replaces_only_after_success_and_preserves_private_mode ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/financial_guard_cli.rs (target/debug/deps/financial_guard_cli-d25507cac17f907a)
+
+running 7 tests
+test fake_financial_child ... ignored, only spawned by fake_results_are_visible_with_logging_off_and_remain_blocked
+test fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls ... ok
+test financial_preflight_failure_is_redacted_and_visible_with_logs_off ... ok
+test corrupt_journal_cannot_disclose_arbitrary_content_or_be_automatically_cleared ... ok
+test financial_parser_errors_do_not_echo_values_even_with_trace_enabled ... ok
+test fake_results_are_visible_with_logging_off_and_remain_blocked ... ok
+test explicit_review_requires_matching_attempt_and_decision_without_bank_work ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/logging_sinks.rs (target/debug/deps/logging_sinks-a1e7b26d331d6461)
+
+running 2 tests
+test logger_child_probe ... ok
+test real_console_and_file_sinks_do_not_disclose_sentinels ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/mfa_deadline.rs (target/debug/deps/mfa_deadline-7e673b9d7398d2bf)
+
+running 15 tests
+test invalid_mfa_is_not_swallowed_or_retried ... ok
+test polling::callback_error_is_preserved_without_retry ... ok
+test caller_cancellation_drops_the_inflight_check ... ok
+test production_wires_setup_and_polling_inside_the_same_300_second_boundary ... ok
+test polling::validation_returns_without_sleep_or_another_poll ... ok
+test setup_error_is_preserved_without_polling ... ok
+test qr_display_failure_propagates_without_retry ... ok
+test polling::mutable_callback_can_validate_after_pending ... ok
+test ready_after_pending_and_qr_finishes_without_an_extra_check ... ok
+test polling::deadline_interrupts_a_sleep_longer_than_the_budget ... ok
+test polling::hung_request_is_dropped_at_the_deadline ... ok
+test polling::repeated_pending_responses_cannot_reset_the_budget ... ok
+test pending_and_repeated_qr_events_cannot_restart_the_deadline ... ok
+test hung_setup_is_cancelled_without_starting_a_check ... ok
+test slow_setup_consumes_the_polling_budget ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/money_cli.rs (target/debug/deps/money_cli-04f3b755ba5598d0)
+
+running 4 tests
+test cli_and_api_share_decimal_policy_without_float_conversion ... ok
+test invalid_amount_is_rejected_by_public_command_parser ... ok
+test caller_built_matches_are_validated_before_credentials_are_loaded ... ok
+test binary_rejects_invalid_money_before_authentication ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/private_files.rs (target/debug/deps/private_files-1e712da80c24fc4f)
+
+running 18 tests
+test private_files_child ... ok
+test storage_without_home_child ... ok
+test denied_log_permissions_return_error_without_replacing_content ... ok
+test existing_subscriber_returns_error_not_panic ... ok
+test explicit_override_supports_settings_and_logger_without_home ... ok
+test runtime_file_failure_does_not_panic ... ok
+test dangling_symlinks_are_not_treated_as_absent_settings ... ok
+test explicit_credentials_are_read_without_chmod_and_special_files_are_rejected ... ok
+test existing_settings_and_logs_preserve_content_and_tighten_modes ... ok
+test newly_created_settings_and_logs_are_private_under_permissive_umask ... ok
+test existing_oversized_logs_require_manual_action_without_truncation ... ok
+test linked_directory_is_refused_without_changing_target ... ok
+test regular_file_cannot_be_used_as_managed_directory ... ok
+test malformed_or_unreadable_settings_are_never_replaced ... ok
+test nonregular_files_return_errors_not_panics ... ok
+test exact_private_modes_also_work_under_restrictive_umasks ... ok
+test symlinks_and_hardlinks_never_overwrite_targets ... ok
+test rotation_is_bounded_during_writes_and_preserves_userdata ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/quote_cli.rs (target/debug/deps/quote_cli-82f4103dd4f833c7)
+
+running 2 tests
+test quote_preflight_ignores_missing_or_corrupt_credentials_without_network ... ok
+test binary_quote_parser_uses_isolated_storage_without_loading_credentials ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/bourso_api-6c58da78357412db)
+
+running 134 tests
+test bank_money::tests::transaction_boundary_preserves_cents ... ok
+test bank_money::tests::parses_exact_signed_cents ... ok
+test bank_money::tests::rejects_malformed_and_overflow_without_echoing_input ... ok
+test client::auth_tests::malformed_mfa_success_returns_safe_error_without_panic ... ok
+test client::auth_tests::missing_password_key_returns_error_without_panic ... ok
+test client::config::tests::test_extract_brs_config ... ok
+test client::auth_tests::absent_challenge_returns_error_without_panic ... ok
+test client::auth_tests::absent_config_returns_error_without_panic ... ok
+test client::auth_tests::optional_user_hash_is_valid_before_authentication_only ... ok
+test client::auth_tests::malformed_config_and_otp_diagnostics_are_safe ... ok
+test client::account::tests::integer_balance_is_euros ... ok
+test client::account::newaccount_tests::http_failure_is_not_a_successful_inventory ... ok
+test client::http_tests::dropping_public_request_cancels_in_flight_io ... ok
+test client::auth_tests::login_before_init_returns_state_error_without_sending ... ok
+test client::http_tests::all_request_destinations_are_local ... ok
+test client::auth_tests::failed_reinitialization_clears_login_readiness ... ok
+test client::http_tests::automatic_redirects_stay_disabled ... ok
+test client::account::newaccount_tests::login_page_is_not_an_empty_portfolio ... ok
+test client::http_tests::export_only_verified_header_means_empty_including_bom ... ok
+test client::account::newaccount_tests::complete_fixture_retains_all_accounts_and_cents ... ok
+test client::auth_tests::malformed_initialization_returns_errors_without_panics ... ok
+test client::http_tests::production_destinations_are_unchanged_without_sending ... ok
+test client::auth_tests::mfa_null_user_hash_is_rejected_before_challenge_post ... ok
+test client::account::newaccount_tests::known_empty_section_allows_empty_inventory_and_absent_category ... ok
+test client::http_tests::replay_guard_http_crash_child ... ignored
+test client::auth_tests::login_null_user_hash_returns_error_regardless_of_logging ... ok
+test client::auth_tests::init_session_then_login_succeeds_with_complete_local_keyboard ... ok
+test client::account::newaccount_tests::http_status_failures_have_safe_diagnostics ... ok
+test client::http_tests::loopback_only_and_fail_closed_routing ... ok
+test client::auth_tests::mfa_completion_requires_authenticated_user_hash ... ok
+test client::account::tests::test_extract_accounts ... ok
+test client::logging_tests::capture_cold_callsite_child ... ignored, fresh-process child; invoked by capture_cold_callsite_from_uncaptured_thread
+test client::account::tests::balances_accept_fractional_and_grouped_signed_euros ... ok
+test client::logging_tests::capture_cold_callsite_from_uncaptured_thread ... ok
+test client::account::newaccount_tests::missing_category_with_other_valid_accounts_is_legitimate ... ok
+test client::logging_tests::logging_config_parse_error_redacts_serde_value_and_source ... ok
+test client::auth_tests::mfa_public_paths_reject_malformed_success ... ok
+test client::logging_tests::logging_extraction_errors_do_not_emit_page_secrets ... ok
+test client::newpad_tests::actual_absent_pad_is_rejected ... ok
+test client::newpad_tests::all_digits_and_repetitions_encode_exactly ... ok
+test client::logging_tests::logging_password_and_svg_errors_do_not_echo_input ... ok
+test client::tests::test_extract_brs_mit_cookie ... ok
+test client::tests::test_extract_token ... ok
+test client::logging_tests::capture_parallel_on_off_shared_callsites ... ok
+test client::account::newaccount_tests::empty_known_sections_accept_attribute_and_nested_product_variants ... ok
+test client::trade::feed::tests::market_status_is_explicit_unknown_for_any_symbol_without_io ... ok
+test client::http_tests::export_rejects_external_redirect_before_sending ... ok
+test client::account::newaccount_tests::malformed_individual_accounts_do_not_hide_behind_valid_siblings ... ok
+test client::trade::feed::tests::market_unavailable_without_requesting_quote ... ok
+test client::http_tests::transport_status_and_parse_errors_propagate ... ok
+test client::http_tests::session_cookies_dynamic_api_and_public_ticks_share_local_transport ... ok
+test client::http_tests::export_follows_relative_and_bank_redirects_locally_with_cookies ... ok
+test client::http_tests::export_form_status_missing_redirect_and_redirect_error_rejected ... ok
+test client::account::newaccount_tests::malformed_category_is_not_silently_dropped ... ok
+test client::http_tests::export_rejects_status_and_unverified_empty_bodies ... ok
+test client::trade::order::order_tests::custom_data_without_expiration_uses_validity_not_discarded_prefill_expiration ... ok
+test client::trade::order::order_tests::divergent_check_does_not_confirm ... ok
+test client::trade::order::order_tests::explicit_future_expiration_survives_on_real_order_path ... ok
+test client::account::tests::malformed_or_overflowing_balance_returns_safe_error ... ok
+test client::trade::order::order_tests::absent_expiration_defaults_to_provider_validity_for_both_data_sources ... ok
+test client::trade::order::order_tests::preparation_messages_require_review_before_check ... ok
+test client::trade::order::order_tests::absent_expiration_and_provider_validity_remain_absent_without_inventing_today ... ok
+test client::trade::order::outcome_tests::before_order_submission_error_is_not_unknown ... ok
+test client::trade::tick::tests::average_overflow_returns_error_instead_of_infinity ... ok
+test client::trade::order::order_tests::prefilled_expiration_is_preserved_without_custom_order_data ... ok
+test client::trade::tick::tests::empty_aggregates_return_errors ... ok
+test client::trade::tick::tests::latest_quote_prefers_qd_then_final_history_entry ... ok
+test client::trade::tick::tests::non_finite_prices_are_rejected_in_every_ohlc_field ... ok
+test client::trade::tick::tests::one_two_and_negative_quote_aggregates ... ok
+test client::trade::tick::tests::test_get_ticks ... ok
+test client::trade::tick::tests::volume_keeps_existing_empty_and_sum_contract ... ok
+test client::transaction::export_tests::export_parse_and_partial_write_failures_preserve_destination ... ok
+test client::transaction::export_tests::export_redirect_url_resolution_checks_original_origin ... ok
+test client::transaction::tests::csv_accepts_signed_grouping_and_integer_euros ... ok
+test client::transaction::export_tests::export_csv_roundtrip_preserves_eleven_fields_and_formula_literals ... ok
+test client::trade::order::order_tests::sell_four_overrides_buy_one_prefill_on_real_order_path ... ok
+test client::transaction::tests::csv_requires_known_headers_and_complete_rows ... ok
+test client::transaction::tests::invalid_csv_amount_is_an_error ... ok
+test client::transaction::tests::test_extract_export_token_missing ... ok
+test client::transaction::tests::test_extract_export_token ... ok
+test client::transaction::tests::test_extract_transactions_empty_html ... ok
+test client::transaction::tests::test_parse_amount ... ok
+test client::transaction::tests::test_extract_transactions ... ok
+test client::transaction::tests::csv_monetary_fields_are_required_finite_and_bounded ... ok
+test client::trade::order::order_tests::submission_log_matches_intent_without_claiming_execution ... ok
+test client::trade::order::order_tests::calendar_boundaries_are_preserved_as_dates_not_timezone_instants ... ok
+test client::http_tests::logging_session_login_and_empty_export_success ... ok
+test client::transfer::init_tests::empty_location_reference_stops_transfer_money_before_next_request ... ok
+test client::transfer::money_tests::decimal_policy_and_boundaries_are_exact ... ok
+test client::trade::order::order_tests::detailed_submission_preserves_raw_state_but_never_asserts_execution ... ok
+test client::transfer::init_tests::empty_location_reference_stops_transfer_funds_before_next_request ... ok
+test client::transfer::money_tests::invalid_float_never_contacts_local_listener ... ok
+test client::trade::order::order_tests::zero_quantity_is_rejected_before_even_prepare ... ok
+test client::transfer::reason_tests::pure_local_policy_preserves_existing_byte_boundaries ... ok
+test client::transfer::reason_tests::reason_error_labels_the_local_byte_policy_not_a_provider_contract ... ok
+test client::trade::order::order_tests::all_nonempty_check_messages_require_review_without_classifying_warning ... ok
+test client::transfer::submission_tests::progress_metadata_retains_compatibility_without_success_claims ... ok
+test client::virtual_pad::tests::test_extract_challenge_token ... ok
+test client::transfer::reason_tests::existing_reason_byte_boundaries_gate_both_public_streams_before_requests ... ok
+test client::newpad_tests::invalid_passwords_and_incomplete_states_never_send ... ok
+test outcome::tests::context_preserves_unknown_and_redacts_reference ... ok
+test replay_guard::tests::injected_write_and_flush_failures_never_call_and_never_clear ... ok
+test replay_guard::tests::owner_drop_releases_lock_even_with_inherited_descriptor ... ok
+test client::virtual_pad::tests::test_extract_data_matrix_keys ... ok
+test client::virtual_pad::tests::test_password_to_virtual_pad_keys ... ok
+test client::trade::order::order_tests::every_divergent_intent_field_prevents_confirmation ... ok
+test client::transfer::init_tests::missing_and_empty_flow_instances_stop_before_debit_for_both_public_streams ... ok
+test client::http_tests::logging_mfa_check_branches ... ok
+test client::transfer::init_tests::missing_and_short_location_references_stop_both_public_streams ... ok
+test client::http_tests::logging_login_account_trade_and_export_failures ... ok
+test client::http_tests::public_request_timeout_disconnects_without_fallback ... ok
+test client::transfer::money_tests::actual_multipart_payload_preserves_cents_without_rounding ... ok
+test client::transfer::init_tests::nonempty_reference_preserves_positional_extraction_and_every_submit_stage ... ok
+test client::http_tests::logging_mfa_request_branches ... ok
+test client::trade::order::order_tests::explicit_intent_wins_for_both_sides_and_all_data_sources ... ok
+test client::transfer::outcome_tests::confirmation_response_is_received_but_not_a_validated_receipt ... ok
+test client::http_tests::logging_order_quote_response_diagnostics_and_success ... ok
+test client::http_tests::logging_transfer_all_response_diagnostics ... ok
+test client::transfer::submission_tests::final_http_200_never_claims_execution_for_either_public_stream ... ok
+test client::account::newaccount_tests::unrecognized_or_malformed_sections_fail_closed ... ok
+test client::http_tests::dropping_public_order_owner_after_final_post_disconnects_without_retry ... ok
+test client::http_tests::dropping_public_transfer_owner_after_final_post_disconnects_without_retry ... ok
+test client::transfer::outcome_tests::final_transfer_post_errors_are_unknown_without_retry ... ok
+test client::trade::order::order_tests::malformed_effective_expiration_is_rejected_before_check_and_confirm ... ok
+test client::newpad_tests::invalid_pads_are_errors_and_never_post_login ... ok
+test client::http_tests::replay_guard_nominal_public_outputs_remain_original_and_unresolved ... ok
+test client::http_tests::replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen ... ok
+test client::http_tests::replay_guard_owner_drop_after_complete_public_post_blocks_reopen ... ok
+test client::http_tests::replay_guard_process_crash_after_complete_public_post_blocks_reopen ... ok
+test client::trade::order::outcome_tests::final_order_post_errors_are_unknown_without_retry ... ok
+test client::http_tests::public_transfer_funds_final_failures_are_unknown_then_exhausted ... ok
+test client::http_tests::public_transfer_money_final_failures_are_unknown_then_exhausted ... ok
+test client::http_tests::public_order_detailed_final_failures_are_unknown_without_retry ... ok
+test client::http_tests::public_order_final_failures_are_unknown_without_retry ... ok
+
+test result: ok. 132 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+     Running tests/replay_guard.rs (target/debug/deps/replay_guard-38bef6b48cc1eca6)
+
+running 10 tests
+test crash_child_before_send ... ignored
+test diagnostics_and_journal_never_capture_sensitive_values ... ok
+test reservation_precedes_closure_and_original_output_is_preserved ... ok
+test unreadable_journal_and_creation_failure_do_not_invoke ... ok
+test absolute_private_storage_and_unsafe_links_are_checked ... ok
+test original_error_identity_survives_and_review_is_exact_and_separate ... ok
+test cancellation_and_panic_keep_reservation_but_unpolled_future_does_not_reserve ... ok
+test concurrent_instances_share_stable_lock_and_one_invocation ... ok
+test invalid_and_ambiguous_storage_never_calls_or_clears ... ok
+test process_crash_before_send_retains_barrier_and_blocks_concurrent_review ... ok
+
+test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/replay_guard_non_unix.rs (target/debug/deps/replay_guard_non_unix-6f596639f688d79f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bourso_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests bourso_api
+
+running 1 test
+test src/bourso_api/src/replay_guard.rs - replay_guard (line 20) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

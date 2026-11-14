@@ -1,0 +1,13 @@
+Scope: bourso_api package, all-targets unit tests, all Rust sources under
+src/bourso_api/src, including test/support modules. Dependencies and the CLI are
+outside this API report. No API functions or source files are excluded, and no
+percentage threshold is asserted. Unexecuted functions remain visible where LLVM
+emits coverage mappings. Macro expansion/compiler-generated coverage follows LLVM.
+
+The same public functions compile in normal and instrumented builds. Unit tests
+replace the private reqwest field with a cfg(test) loopback-only HTTP facade;
+financial/authentication method bodies are shared, but the production transport
+configuration is not exercised by these fixtures. Mock results do not establish
+live bank compatibility. Tests use no bank credentials or real bank requests.
+Rust and LLVM versions are in toolchain.txt; matching LLVM majors are required and
+actual profile merge/report generation must succeed (minor versions may differ).

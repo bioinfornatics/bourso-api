@@ -1,0 +1,569 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-13",
+  "repository": "/home/jmercier/Codes/me/bourso-api",
+  "candidate": "b0fd81fcc5c473375efd1737f2b1c92377747884",
+  "review_model_requested": "gpt-6-astra",
+  "delegates": [
+    "20261113_12",
+    "20261113_13",
+    "20261113_14",
+    "20261113_15"
+  ],
+  "coverage": [
+    "Toutes sources Rust des deux crates",
+    "13 tests API et leurs fonctions",
+    "CLI/settings/logs/QR/validation",
+    "DCA, README, CI, deux manifestes/verrous, devcontainer, licence"
+  ],
+  "checks": {
+    "git": "clean before review",
+    "shell_syntax": "PASS",
+    "cargo_fmt": "FAIL: huit fichiers",
+    "cargo_metadata_root_offline_locked": "PASS",
+    "cargo_test_build_clippy": "NOT RUN: cache incomplet",
+    "bank_network": "NOT RUN: interdit"
+  },
+  "limitations": [
+    "Aucun P0 démontré; pas une certification de production",
+    "Probes Python synthétiques ne prouvent pas une exécution du Rust",
+    "Aucune CVE, compatibilité bancaire ou release distante vérifiée"
+  ],
+  "findings": [
+    {
+      "id": "R01",
+      "severity": "P1",
+      "title": "Respecter le sens et la quantité explicitement demandés",
+      "locations": [
+        "src/bourso_api/src/client/trade/order.rs:45-70",
+        "src/lib.rs:351-360"
+      ],
+      "observation": "Le préremplissage est conservé lorsque sens et quantité sont déjà présents.",
+      "impact": "Un préremplissage contradictoire peut produire une opération différente et un journal trompeur. Réponses bancaires actuelles non capturées.",
+      "recommendation": "Donner priorité à l’intention explicite ou refuser les conflits; vérifier le payload réel.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.5",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R02",
+      "severity": "P1",
+      "title": "Contrôler les résultats métier avant et après confirmation d’ordre",
+      "locations": [
+        "src/bourso_api/src/client/trade/order.rs:85-89,152-219"
+      ],
+      "observation": "Le résultat de check est ignoré; le statut métier de confirm n’est pas exposé.",
+      "impact": "Confirmation sans garde cliente sur les messages et paramètres; dépôt et exécution peuvent être confondus. Acceptation serveur inconnue.",
+      "recommendation": "Définir les états admissibles, comparer l’intention et retourner un état métier typé.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.4",
+        "bourso-y3u.6",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R03",
+      "severity": "P1",
+      "title": "Prouver la réussite métier d’un virement",
+      "locations": [
+        "src/bourso_api/src/client/transfer/mod.rs:139-146,178-185,212-219,284-291,322-334"
+      ],
+      "observation": "HTTP 200 puis présence du mot Confirmation suffisent; corps intermédiaires ignorés.",
+      "impact": "Faux succès/faux échec possibles; aucun incident bancaire observé.",
+      "recommendation": "Valider transitions, reçu, référence et récapitulatif; résultat inconnu en l’absence de preuve.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.4",
+        "bourso-y3u.7",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R04",
+      "severity": "P1",
+      "title": "Distinguer les résultats financiers inconnus des échecs certains",
+      "locations": [
+        "src/bourso_api/src/client/trade/order.rs:191-217",
+        "src/bourso_api/src/client/transfer/mod.rs:312-333"
+      ],
+      "observation": "Une perte de réponse après POST final retourne une erreur ordinaire.",
+      "impact": "Une relance peut dupliquer une opération; pas de retry automatique ni déduplication serveur établie.",
+      "recommendation": "Exposer OutcomeUnknown, conserver les références disponibles et imposer rapprochement avant reprise.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.8",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R05",
+      "severity": "P1",
+      "title": "Supprimer les secrets des journaux et protéger les fichiers locaux",
+      "locations": [
+        "src/settings.rs:89-94,114-128",
+        "src/bourso_api/src/client/mod.rs:340-345,453,551-604",
+        "src/bourso_api/src/client/config.rs:75-84",
+        "src/bourso_api/src/client/virtual_pad.rs:50-55"
+      ],
+      "observation": "Le fichier capture TRACE et reçoit tokens, URL sensibles, HTML/config bruts et caractères de mot de passe invalides.",
+      "impact": "Persistance sensible et partage involontaire possibles; droits réels dépendants de l’environnement, aucun rejeu de token démontré.",
+      "recommendation": "Expurger à la source; permissions privées et politique de rétention explicites.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.10",
+        "bourso-y3u.11",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R06",
+      "severity": "P1",
+      "title": "Rendre le suivi DCA cohérent avec le résultat de l’opération",
+      "locations": [
+        "bourso-launchd.sh:14-40",
+        "README.md:168-169"
+      ],
+      "observation": "Répertoire absent, timestamp après lancement asynchrone, aucun verrou.",
+      "impact": "Répétition possible, investissement sauté après échec et lancements concurrents.",
+      "recommendation": "État tentative/succès/inconnu, verrou, résultat observable et reprise prudente.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.27",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R07",
+      "severity": "P1",
+      "title": "Refuser les exports invalides sans écraser les données précédentes",
+      "locations": [
+        "src/bourso_api/src/client/transaction.rs:90-125,181-206",
+        "src/lib.rs:287-321"
+      ],
+      "observation": "Statut HTTP non validé; formulaire assimilé à vide; schéma CSV non contrôlé.",
+      "impact": "Erreur masquée en zéro transaction et remplacement du fichier utilisateur.",
+      "recommendation": "Valider HTTP/session/schéma et préserver la destination en cas d’erreur.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.14",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R08",
+      "severity": "P2",
+      "title": "Préserver la date d’expiration explicitement fournie",
+      "locations": [
+        "src/bourso_api/src/client/trade/order.rs:72-79"
+      ],
+      "observation": "Une date présente est remplacée par la date UTC du jour.",
+      "impact": "Validité raccourcie involontairement.",
+      "recommendation": "Préserver la valeur explicite; appliquer un défaut seulement si absente.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.9"
+      ]
+    },
+    {
+      "id": "R09",
+      "severity": "P2",
+      "title": "Valider les montants avant toute authentification",
+      "locations": [
+        "src/main.rs:221-226",
+        "src/lib.rs:380-383",
+        "src/bourso_api/src/client/transfer/mod.rs:195-203,359-362"
+      ],
+      "observation": "Texte invalide panique tardivement; NaN/infini passent le seuil; arrondi implicite.",
+      "impact": "MFA inutile, payload invalide et montant affiché différent du montant soumis.",
+      "recommendation": "Parser au point d’entrée; centimes ou décimal, bornes et politique de précision explicites.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.12"
+      ]
+    },
+    {
+      "id": "R10",
+      "severity": "P2",
+      "title": "Parser les montants bancaires sans corruption silencieuse",
+      "locations": [
+        "src/bourso_api/src/client/transaction.rs:160-169,193-203",
+        "src/bourso_api/src/client/account.rs:82-92",
+        "src/bourso_api/src/constants.rs:6"
+      ],
+      "observation": "Montant invalide devient zéro; certains espaces Unicode restent; soldes 12 ou 12,3 mal normalisés.",
+      "impact": "Export/solde faux ou panic pour des formats acceptés par le parseur actuel. Variantes réelles à confirmer.",
+      "recommendation": "Parseur commun fallible, normalisation contrôlée et représentation monétaire exacte.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.13"
+      ]
+    },
+    {
+      "id": "R11",
+      "severity": "P2",
+      "title": "Ne pas masquer les erreurs de récupération des comptes",
+      "locations": [
+        "src/bourso_api/src/client/account.rs:24-98"
+      ],
+      "observation": "Les erreurs de catégories sont remplacées par des vecteurs vides.",
+      "impact": "Inventaire incomplet ou vide affiché comme succès.",
+      "recommendation": "Distinguer absence légitime, session expirée et HTML incompatible.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.16"
+      ]
+    },
+    {
+      "id": "R12",
+      "severity": "P2",
+      "title": "Produire un CSV de sortie correctement échappé",
+      "locations": [
+        "src/lib.rs:296-315"
+      ],
+      "observation": "Les champs sont joints avec ; sans échappement.",
+      "impact": "Libellés avec séparateur/retour ligne corrompent les colonnes.",
+      "recommendation": "Utiliser un writer CSV et un test aller-retour à onze champs.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.15"
+      ]
+    },
+    {
+      "id": "R13",
+      "severity": "P2",
+      "title": "Garantir la deadline MFA dans toutes les branches",
+      "locations": [
+        "src/lib.rs:169-220",
+        "src/bourso_api/src/client/mod.rs:111-115,518-524"
+      ],
+      "observation": "La branche QR ne contrôle pas le maximum; temps réseau non compté; pas de timeout explicite.",
+      "impact": "Attente au-delà des cinq minutes annoncées, éventuellement indéfinie.",
+      "recommendation": "Deadline monotone incluant HTTP et pauses, délais explicites sans retry financier aveugle.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.17"
+      ]
+    },
+    {
+      "id": "R14",
+      "severity": "P2",
+      "title": "Transformer les entrées d’authentification malformées en erreurs",
+      "locations": [
+        "src/bourso_api/src/client/config.rs:76-81",
+        "src/bourso_api/src/client/mod.rs:296,367,393,424,452,504",
+        "src/bourso_api/src/client/virtual_pad.rs:96-104"
+      ],
+      "observation": "Des unwrap dépendent de réponses externes ou d’une séquence init/login.",
+      "impact": "Crash sur changement HTML, null/champ absent ou mauvais état.",
+      "recommendation": "Erreurs typées expurgées et état de session explicite.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.18"
+      ]
+    },
+    {
+      "id": "R15",
+      "severity": "P2",
+      "title": "Refuser un clavier virtuel incomplet ou ambigu",
+      "locations": [
+        "src/bourso_api/src/client/virtual_pad.rs:71-84",
+        "src/bourso_api/src/client/mod.rs:223-227,247-260"
+      ],
+      "observation": "Dix chaînes vides sont initialisées, sans vérification finale de complétude/unicité.",
+      "impact": "Mauvais mot de passe encodé et échecs de connexion répétés; verrouillage bancaire non prouvé.",
+      "recommendation": "Vérifier bijection des dix chiffres et clés non vides avant login.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.19"
+      ]
+    },
+    {
+      "id": "R16",
+      "severity": "P2",
+      "title": "Retourner un échec système quand la configuration manque",
+      "locations": [
+        "src/lib.rs:127-129",
+        "src/main.rs:243-245"
+      ],
+      "observation": "Les commandes bancaires sans identifiant retournent Ok après un avertissement.",
+      "impact": "Automatisation croit que l’opération a réussi.",
+      "recommendation": "Erreur contextualisée et code de sortie non nul avant tout appel bancaire.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.20"
+      ]
+    },
+    {
+      "id": "R17",
+      "severity": "P2",
+      "title": "Permettre la réparation de config et les quotes sans config valide",
+      "locations": [
+        "src/lib.rs:23-46",
+        "src/settings.rs:41-61"
+      ],
+      "observation": "Chargement JSON avant dispatch, y compris config et quote.",
+      "impact": "Un JSON tronqué bloque sa réparation et les cotations publiques.",
+      "recommendation": "Chargement conditionnel et distinction absence/permission/corruption.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.21"
+      ]
+    },
+    {
+      "id": "R18",
+      "severity": "P2",
+      "title": "Corriger la sémantique des filtres de comptes",
+      "locations": [
+        "src/main.rs:30-51",
+        "src/lib.rs:242-253"
+      ],
+      "observation": "Options sans SetTrue; valeurs inutilisées et priorité silencieuse entre filtres.",
+      "impact": "accounts --trading exige une valeur, combinaisons ambiguës. Source uniquement, Clap verrouillé non exécuté.",
+      "recommendation": "Drapeaux booléens avec combinaison ou exclusion explicite.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.22"
+      ]
+    },
+    {
+      "id": "R19",
+      "severity": "P2",
+      "title": "Gérer explicitement les historiques de cotation vides",
+      "locations": [
+        "src/lib.rs:88-95",
+        "src/bourso_api/src/client/trade/tick.rs:90-108"
+      ],
+      "observation": "Dernier cours unwrap; moyenne NaN, minimum MAX et maximum zéro sur série vide.",
+      "impact": "Crash ou cours artificiels.",
+      "recommendation": "Agrégats optionnels/fallibles et erreur aucune cotation.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.23"
+      ]
+    },
+    {
+      "id": "R20",
+      "severity": "P2",
+      "title": "Évaluer l’ouverture selon le marché et non le poste local",
+      "locations": [
+        "src/bourso_api/src/client/trade/feed.rs:15-23"
+      ],
+      "observation": "Comparaison des heures Local sans fuseau, date ni calendrier.",
+      "impact": "Week-end ouvert, désaccord entre fuseaux et séance nocturne mal traitée; aucun caller CLI actuel.",
+      "recommendation": "Statut fournisseur ou calendrier/fuseau explicite et horloge injectée.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.24"
+      ]
+    },
+    {
+      "id": "R21",
+      "severity": "P2",
+      "title": "Limiter les redirections d’export aux origines autorisées",
+      "locations": [
+        "src/bourso_api/src/client/transaction.rs:68-85"
+      ],
+      "observation": "URL absolue commençant par http suivie sans vérifier schéma/hôte.",
+      "impact": "Requête hors banque/en clair possible sur redirection; contrôle attaquant et fuite de cookies non démontrés.",
+      "recommendation": "Résolution URL standard, HTTPS et allowlist d’origines.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.25"
+      ]
+    },
+    {
+      "id": "R22",
+      "severity": "P3",
+      "title": "Aligner la limite du motif sur le contrat Unicode",
+      "locations": [
+        "src/bourso_api/src/client/transfer/mod.rs:377-380",
+        "src/bourso_api/src/client/transfer/error.rs:24-25"
+      ],
+      "observation": "len compte les octets alors que le message annonce 50 caractères.",
+      "impact": "26 é sont refusés.",
+      "recommendation": "Confirmer l’unité fournisseur et appliquer/documenter la bonne limite.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.4",
+        "bourso-y3u.26"
+      ]
+    },
+    {
+      "id": "R23",
+      "severity": "P1",
+      "title": "Mesurer la couverture sans amputer l’API livrée",
+      "locations": [
+        "src/bourso_api/src/client/mod.rs:132-133",
+        "src/bourso_api/src/client/account.rs:24-31",
+        ".github/workflows/coverage.yml:15-17"
+      ],
+      "observation": "get_headers retiré sous tarpaulin_include reste appelé; 36 exclusions dont parcours financiers.",
+      "impact": "Incohérence de compilation conditionnelle et couverture non représentative. Workflow distant non exécuté.",
+      "recommendation": "Compiler/instrumenter la même API; tester les parcours avec transport simulé.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.3",
+        "bourso-y3u.28",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R24",
+      "severity": "P1",
+      "title": "Vérifier les deux crates avant intégration et publication",
+      "locations": [
+        ".github/workflows/cicd.yml:4-7,47-54",
+        ".github/workflows/coverage.yml:3,17,22"
+      ],
+      "observation": "Pas de trigger pull_request; tests complets au tag; aucun test CLI/intégration.",
+      "impact": "Régressions monétaires sans garde CI déclarée avant intégration; protections externes inconnues.",
+      "recommendation": "CI PR, tests deux crates, fmt/clippy et scénarios financiers hermétiques.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.3",
+        "bourso-y3u.29",
+        "bourso-y3u.34"
+      ]
+    },
+    {
+      "id": "R25",
+      "severity": "P2",
+      "title": "Unifier les résolutions de dépendances et les builds verrouillés",
+      "locations": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/bourso_api/Cargo.toml",
+        "src/bourso_api/Cargo.lock:162-179"
+      ],
+      "observation": "Verrou API encore 0.4.0, dépendances directes périmées et résolutions divergentes; pas de workspace.",
+      "impact": "Build autonome/racine non équivalents; mise à jour implicite possible.",
+      "recommendation": "Workspace à verrou unique ou politique autonome explicite; --locked.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.1"
+      ]
+    },
+    {
+      "id": "R26",
+      "severity": "P2",
+      "title": "Déclarer et vérifier un MSRV réellement supporté",
+      "locations": [
+        "README.md:67-71",
+        "rust-toolchain.toml",
+        "Cargo.lock:863-872",
+        "src/qrcode.rs:1-26"
+      ],
+      "observation": "Rust >=1.77.2 annoncé mais image 0.25.9 déclare 1.85 dans l’index local; features QR superflues.",
+      "impact": "Compilation impossible sur minimum annoncé; outil stable flottant.",
+      "recommendation": "MSRV réel, toolchain testée et features nécessaires seulement.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.2"
+      ]
+    },
+    {
+      "id": "R27",
+      "severity": "P2",
+      "title": "Réduire les privilèges et figer la chaîne de distribution",
+      "locations": [
+        ".github/workflows/cicd.yml:9-10,30,39,45,89",
+        ".github/workflows/coverage.yml:8-23",
+        ".devcontainer/devcontainer.json:7,35-37"
+      ],
+      "observation": "Actions par tags, images flottantes, compilation avec contents write et couverture sans seccomp.",
+      "impact": "Risque supply chain conditionnel; aucune compromission ou CVE démontrée.",
+      "recommendation": "SHA/digests, permissions par job, checkout sans credentials persistants, exceptions SLSA documentées.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.30"
+      ]
+    },
+    {
+      "id": "R28",
+      "severity": "P2",
+      "title": "Documenter honnêtement la configuration et le DCA",
+      "locations": [
+        "README.md:73,79-85,144-212",
+        "src/main.rs:57-61",
+        "src/settings.rs:7-12,67-77"
+      ],
+      "observation": "config exige username absent des exemples; credentials JSON peut contenir password; DCA interactif; Windows -NoExit; chown 777 incorrect.",
+      "impact": "Parcours de démarrage cassé et promesses sécurité/autonomie trompeuses.",
+      "recommendation": "Exemples exécutables, modes de secrets/interaction explicites, aucun contournement MFA.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.11",
+        "bourso-y3u.31"
+      ]
+    },
+    {
+      "id": "R29",
+      "severity": "P3",
+      "title": "Distribuer les notices de licence et corriger le formatage",
+      "locations": [
+        "LICENSE:12-13",
+        ".github/workflows/cicd.yml:60-96",
+        "Cargo.toml",
+        "src/bourso_api/Cargo.toml"
+      ],
+      "observation": "Archives décrites ne contiennent que l’exécutable; manifestes sans licence; fmt --check échoue sur huit fichiers.",
+      "impact": "Distribution sans notice et gate de formatage en échec.",
+      "recommendation": "Inclure notices nécessaires, métadonnées licence et formatage vérifié séparément.",
+      "evidence_level": "source",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.32",
+        "bourso-y3u.33"
+      ]
+    },
+    {
+      "id": "H01",
+      "severity": "P1",
+      "title": "Établir les contrats fournisseur avant de changer les sémantiques financières",
+      "locations": [
+        "src/bourso_api/src/client/trade/order.rs:58-66,229-255",
+        "src/bourso_api/src/client/transfer/mod.rs"
+      ],
+      "observation": "Montant total vs prix unitaire, statuts check/confirm, annulation, étapes et Unicode non documentés dans les preuves.",
+      "impact": "Hypothèses seulement; éviter une correction spéculative pouvant changer les fonds.",
+      "recommendation": "Fixtures anonymisées/provenance, contrats et décisions; pas de connexion bancaire sans autorisation dédiée.",
+      "evidence_level": "hypothesis",
+      "rust_execution": "NOT RUN",
+      "beads_refs": [
+        "bourso-y3u.4"
+      ]
+    }
+  ],
+  "beads_epic": "bourso-y3u"
+}

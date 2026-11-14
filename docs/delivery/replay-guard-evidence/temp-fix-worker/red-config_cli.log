@@ -1,0 +1,46 @@
+   Compiling bourso-cli v0.6.0 (/home/jmercier/Codes/me/bourso-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running tests/config_cli.rs (target/debug/deps/config_cli-591cc6e9e1e14c44)
+
+running 1 test
+test fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls ... FAILED
+
+failures:
+
+---- fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls stdout ----
+
+thread '<unnamed>' (2158631) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (2158633) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158634) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158632) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread 'fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls' (2158630) panicked at tests/config_cli.rs:198:46:
+called `Result::unwrap()` on an `Err` value: Any { .. }
+
+thread '<unnamed>' (2158635) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158636) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158638) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+thread '<unnamed>' (2158637) panicked at tests/config_cli.rs:24:31:
+called `Result::unwrap()` on an `Err` value: Os { code: 17, kind: AlreadyExists, message: "File exists" }
+
+
+failures:
+    fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p bourso-cli --test config_cli`

@@ -1,0 +1,17 @@
+{
+  "status": "SAME_CONTENT_ENVIRONMENT",
+  "proof_candidate": "7d8e59caafb3402c38ab73d9a8df4121df4cb90bf95294b8c9d37262dd78c204",
+  "post_source_commit_candidate": "0f04168e8e32a6b478f32462fbada510237ef53aa98454636d6ca5620c22d48e",
+  "equal_fields": [
+    "entries",
+    "format_version",
+    "projection",
+    "root",
+    "scope"
+  ],
+  "changed_fields": [
+    "candidate_id",
+    "git"
+  ],
+  "claim": "Precommit proofs retain original identity; only HEAD/index changed."
+}

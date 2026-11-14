@@ -1,0 +1,13 @@
+{
+  "legal_files": 313,
+  "third_party_packages": 181,
+  "platform_containers": [
+    "linux",
+    "darwin",
+    "windows"
+  ],
+  "binary": "non-executable fixture; no native build or binary execution",
+  "checks": "archive bytes, exact legal inventory, verbatim SPDX/source, project MIT, checksum and base64 association passed",
+  "format": "two read-only workspace checks passed; before/after candidate identity must be compared separately",
+  "historical_format_delta": "unavailable; no historical semantic-equivalence claim"
+}

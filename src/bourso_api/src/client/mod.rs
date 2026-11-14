@@ -6,10 +6,13 @@ pub mod transaction;
 pub mod transfer;
 pub mod virtual_pad;
 
+#[cfg(test)]
+mod http;
+
 use core::fmt;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use cookie_store::Cookie;
 use error::ClientError;
 use regex::Regex;
@@ -45,7 +48,10 @@ lazy_static::lazy_static! {
 
 pub struct BoursoWebClient {
     /// The client used to make requests to the Bourso website.
+    #[cfg(not(test))]
     client: reqwest::Client,
+    #[cfg(test)]
+    client: http::Client,
     /// __brs_mit cookie is a cookie that is necessary to access login page.
     /// Bourso website sets it when you access the login page for the first time before refreshing the page.
     brs_mit_cookie: String,
@@ -101,19 +107,28 @@ impl MfaType {
     }
 }
 
+impl Default for BoursoWebClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BoursoWebClient {
     pub fn new() -> BoursoWebClient {
         // create a new client
         let cookie_store = CookieStore::new(None);
         let cookie_store = CookieStoreMutex::new(cookie_store);
         let cookie_store = Arc::new(cookie_store);
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .cookie_provider(Arc::clone(&cookie_store))
+            .build()
+            .unwrap();
+        #[cfg(test)]
+        let client = client.into();
         BoursoWebClient {
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .cookie_provider(Arc::clone(&cookie_store))
-                .build()
-                .unwrap(),
-            cookie_store: cookie_store,
+            client,
+            cookie_store,
             brs_mit_cookie: String::new(),
             virtual_pad_ids: Default::default(),
             challenge_id: String::new(),
@@ -129,7 +144,6 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// The headers as a `reqwest::header::HeaderMap`.
-    #[cfg(not(tarpaulin_include))]
     fn get_headers(&self) -> reqwest::header::HeaderMap {
         use rand::prelude::IndexedRandom;
 
@@ -156,16 +170,17 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// The login page content as a string.
-    #[cfg(not(tarpaulin_include))]
     async fn get_login_page(&self) -> Result<String> {
         Ok(self
             .client
             .get(format!("{BASE_URL}/connexion/"))
             .headers(self.get_headers())
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .text()
-            .await?)
+            .await
+            .map_err(reqwest::Error::without_url)?)
     }
 
     /// Initialize the session by retrieving the `__brs_mit` cookie, the form token, the challenge ID and the virtual pad keys.
@@ -173,8 +188,10 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// Nothing if the session was initialized successfully, an error otherwise.
-    #[cfg(not(tarpaulin_include))]
     pub async fn init_session(&mut self) -> Result<()> {
+        // Clear the login-ready marker before any fallible work: failed reinitialization
+        // must not leave a previous keyboard available for another login.
+        self.virtual_pad_ids.clear();
         // This first call is necessary to get the __brs_mit cookie
         let init_res = self.get_login_page().await?;
 
@@ -183,25 +200,35 @@ impl BoursoWebClient {
         // Use a scope to drop the lock on the cookie store
         // once we've inserted the necessary cookies
         {
-            let mut store = self.cookie_store.lock().unwrap();
-            store.insert(
-                Cookie::parse(
-                    // Necessary cookie to remove the domain migration error
-                    "brsDomainMigration=migrated;",
-                    &reqwest::Url::parse(&format!("{BASE_URL}/")).unwrap(),
+            let origin = reqwest::Url::parse(&format!("{BASE_URL}/")).unwrap();
+            #[cfg(test)]
+            let origin = self.client.route_url(origin);
+            let mut store = self
+                .cookie_store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Could not initialize session cookie store"))?;
+            store
+                .insert(
+                    Cookie::parse(
+                        // Necessary cookie to remove the domain migration error
+                        "brsDomainMigration=migrated;",
+                        &origin,
+                    )
+                    .map_err(|_| anyhow::anyhow!("Could not parse session cookie"))?,
+                    &origin,
                 )
-                .unwrap(),
-                &reqwest::Url::parse(&format!("{BASE_URL}/")).unwrap(),
-            )?;
-            store.insert(
-                Cookie::parse(
-                    // Necessary cookie to access the virtual pad
-                    format!("__brs_mit={};", self.brs_mit_cookie),
-                    &reqwest::Url::parse(&format!("{BASE_URL}/")).unwrap(),
+                .map_err(|_| anyhow::anyhow!("Could not store session cookie"))?;
+            store
+                .insert(
+                    Cookie::parse(
+                        // Necessary cookie to access the virtual pad
+                        format!("__brs_mit={};", self.brs_mit_cookie),
+                        &origin,
+                    )
+                    .map_err(|_| anyhow::anyhow!("Could not parse session cookie"))?,
+                    &origin,
                 )
-                .unwrap(),
-                &reqwest::Url::parse(&format!("{BASE_URL}/")).unwrap(),
-            )?;
+                .map_err(|_| anyhow::anyhow!("Could not store session cookie"))?;
         }
 
         // We call the login page again to a form token
@@ -209,16 +236,18 @@ impl BoursoWebClient {
 
         self.token = extract_token(&res)?;
         self.config = extract_brs_config(&res)?;
-        debug!("Using version from {}", self.config.app_release_date);
+        debug!("Session configuration loaded");
 
         let res = self
             .client
             .get(format!("{BASE_URL}/connexion/clavier-virtuel?_hinclude=1"))
             .headers(self.get_headers())
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .text()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         self.challenge_id = virtual_pad::extract_challenge_token(&res)?;
 
@@ -239,10 +268,12 @@ impl BoursoWebClient {
     /// # Returns
     ///
     /// Nothing if the login was successful, an error otherwise.
-    #[cfg(not(tarpaulin_include))]
     pub async fn login(&mut self, customer_id: &str, password: &str) -> Result<()> {
         use error::ClientError;
 
+        // Populated only at the end of init_session (also injected by local fixtures).
+        virtual_pad::validate_keys(&self.virtual_pad_ids)
+            .context("Invalid session state: initialize the session before login")?;
         self.customer_id = customer_id.to_string();
         self.password =
             virtual_pad::password_to_virtual_pad_keys(self.virtual_pad_ids.clone(), password)?
@@ -265,17 +296,18 @@ impl BoursoWebClient {
             .multipart(data)
             .headers(self.get_headers())
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 302 {
             let status = res.status();
-            let text = res.text().await?;
+            let text = res.text().await.map_err(reqwest::Error::without_url)?;
             if text.contains("Identifiant ou mot de passe invalide")
                 || text.contains("Erreur d'authentification")
             {
                 bail!(ClientError::InvalidCredentials);
             }
-            error!("{}", text);
+            error!("Login rejected, status code: {}", status);
             bail!("Could not login to Bourso website, status code: {}", status);
         }
 
@@ -284,22 +316,23 @@ impl BoursoWebClient {
             .get(format!("{BASE_URL}/"))
             .headers(self.get_headers())
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .text()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.contains(r#"href="/se-deconnecter""#) {
             // Update the config with user hash
-            self.config = extract_brs_config(&res)?;
-            info!(
-                "🔓 You are now logged in with user: {}",
-                self.config.user_hash.as_ref().unwrap()
-            );
+            let config = extract_brs_config(&res)?;
+            config.require_user_hash()?;
+            self.config = config;
+            info!("🔓 You are now logged in");
         } else {
             if res.contains("/securisation") {
                 bail!(ClientError::MfaRequired)
             }
-            debug!("{}", res);
+            debug!("Authentication response did not match the expected page");
 
             bail!(ClientError::InvalidCredentials)
         }
@@ -314,38 +347,38 @@ impl BoursoWebClient {
     /// * `form_state` - The form state to use to check the MFA status.
     /// * `token_form` - The token form to use to validate the MFA process.
     /// * `mfa_type` - The type of MFA requested.
-    #[cfg(not(tarpaulin_include))]
     pub async fn request_mfa(&mut self) -> Result<(String, String, String, MfaType)> {
         let _ = self
             .client
             .get(format!("{BASE_URL}/securisation"))
             .headers(self.get_headers())
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let res = self
             .client
             .get(format!("{BASE_URL}/securisation/validation"))
             .headers(self.get_headers())
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
-        let res = res.text().await?;
+        let res = res.text().await.map_err(reqwest::Error::without_url)?;
 
         let mfa_type = if res.contains("brs-otp-webtoapp") {
             // We're only supporting web to app MFA for now
             // cause it seems like Bourso is deprecating SMS and email MFA as of January 2026
             MfaType::WebToApp
         } else {
-            debug!("{}", res);
+            debug!("Authentication response did not match the expected page");
             let regex = Regex::new(r#"brs-otp-(?P<mfa_type>sms|email)"#).unwrap();
-            let captures = regex.captures(&res);
-            if captures.is_none() {
-                error!("{}", res);
-                bail!("Could not request MFA, MFA type not found");
-            }
-            // If one of the other MFA types is found, we bail as they are not supported
-            let mfa_type_str = captures.unwrap().name("mfa_type").unwrap().as_str();
+            let mfa_type_str = regex
+                .captures(&res)
+                .and_then(|captures| captures.name("mfa_type"))
+                .context("Could not request MFA, MFA type not found")?;
+            // Keep SMS and email unsupported.
+            let mfa_type_str = mfa_type_str.as_str();
             bail!(
                 "Could not request MFA, MFA type {} not supported",
                 mfa_type_str
@@ -355,7 +388,7 @@ impl BoursoWebClient {
         self.config = extract_brs_config(&res)?;
         let (otp_id, form_state) = extract_otp_params(&res)?;
 
-        let contact_number = match mfa_type {
+        let _contact_number = match mfa_type {
             MfaType::WebToApp => "your phone app".to_string(),
             _ => extract_user_contact(&res)?,
         };
@@ -364,14 +397,11 @@ impl BoursoWebClient {
         let url = format!(
             "{}/fr-FR/_user_/_{}_/session/challenge/{}/{}",
             self.config.api_url,
-            self.config.user_hash.as_ref().unwrap(),
+            self.config.require_user_hash()?,
             mfa_type.start_path(),
             otp_id
         );
-        debug!(
-            "Requesting MFA {} to {} with url {}",
-            mfa_type, contact_number, url
-        );
+        debug!("Requesting MFA {}", mfa_type);
 
         let payload = serde_json::json!({"formState": form_state});
 
@@ -382,19 +412,21 @@ impl BoursoWebClient {
             .header("Content-Type", "application/json; charset=utf-8")
             .headers(self.get_headers())
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         if res.status() != 200 {
             bail!("Could not request MFA, status code: {}", res.status());
         }
 
-        let body = res.text().await?;
-        let json_body: serde_json::Value = serde_json::from_str(&body)?;
-        if json_body["success"].as_bool().unwrap() {
-            info!("{} MFA request sent to {}", mfa_type, contact_number);
+        let body = res.text().await.map_err(reqwest::Error::without_url)?;
+        let json_body: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| safe_json_error("Could not parse MFA response", e))?;
+        if mfa_success(&json_body)? {
+            info!("{} MFA request sent", mfa_type);
         } else {
-            error!("{}", json_body);
-            bail!("Could not request MFA, response: {}", json_body);
+            error!("MFA request rejected");
+            bail!("Could not request MFA: challenge rejected");
         }
 
         Ok((otp_id.to_string(), form_state, token_form, mfa_type))
@@ -410,7 +442,6 @@ impl BoursoWebClient {
     ///
     /// # Returns
     /// * `true` if the MFA was successfully submitted, `false` if the MFA is still pending.
-    #[cfg(not(tarpaulin_include))]
     pub async fn check_mfa(
         &mut self,
         mfa_type: MfaType,
@@ -421,11 +452,11 @@ impl BoursoWebClient {
         let url = format!(
             "{}/_user_/_{}_/session/challenge/{}/{}",
             self.config.api_url,
-            self.config.user_hash.as_ref().unwrap(),
+            self.config.require_user_hash()?,
             mfa_type.check_path(),
             otp_id
         );
-        debug!("Checking MFA status to {}", url);
+        debug!("Checking MFA status");
 
         let payload = serde_json::json!({
             "formState": form_state
@@ -436,21 +467,23 @@ impl BoursoWebClient {
             .body(payload.to_string())
             .header("Content-Type", "application/json; charset=utf-8")
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status_code = res.status();
 
         if status_code != 200 {
-            let body = res.text().await?;
-            error!("{}", body);
+            let _body = res.text().await.map_err(reqwest::Error::without_url)?;
+            error!("MFA check failed, status code: {}", status_code);
             bail!("Could not submit MFA code, status code: {}", status_code);
         }
 
-        let body = res.text().await?;
-        let json_body: serde_json::Value = serde_json::from_str(&body)?;
+        let body = res.text().await.map_err(reqwest::Error::without_url)?;
+        let json_body: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| safe_json_error("Could not parse MFA response", e))?;
 
-        if json_body["success"].as_bool().unwrap() {
-            debug!("Submitting form with token: {}", token_form);
+        if mfa_success(&json_body)? {
+            debug!("Submitting MFA validation form");
 
             let params = [("form[_token]", token_form)];
 
@@ -475,7 +508,8 @@ impl BoursoWebClient {
                 .header("accept-language", "fr-FR,fr;q=0.9")
                 .header("priority", "u=0, i")
                 .send()
-                .await?;
+                .await
+                .map_err(reqwest::Error::without_url)?;
 
             if res.status() != 302 {
                 // bail!("Could not submit MFA validation, status code: {}", res.status());
@@ -492,38 +526,55 @@ impl BoursoWebClient {
                 .header("referer", format!("{BASE_URL}/securisation/validation"))
                 .header("accept-language", "fr-FR,fr;q=0.9")
                 .send()
-                .await?
+                .await
+                .map_err(reqwest::Error::without_url)?
                 .text()
-                .await?;
+                .await
+                .map_err(reqwest::Error::without_url)?;
 
             if res.contains(r#"href="/se-deconnecter""#) {
                 // Update the config with user hash
-                self.config = extract_brs_config(&res)?;
-                info!(
-                    "🔓 You are now logged in with user: {}",
-                    self.config.user_hash.as_ref().unwrap()
-                );
+                let config = extract_brs_config(&res)?;
+                config.require_user_hash()?;
+                self.config = config;
+                info!("🔓 You are now logged in");
             } else {
                 if res.contains("/securisation") {
                     bail!(ClientError::MfaRequired);
                 }
 
-                bail!("Could not submit MFA, response: {}", res);
+                bail!("Could not submit MFA: unexpected authentication page");
             }
 
             Ok(true)
         } else {
             debug!("⏳ MFA not yet validated");
 
-            if json_body["qrcode"].is_string() {
-                bail!(ClientError::QRCodeRequired(
-                    json_body["qrcode"].as_str().unwrap().to_string()
-                ));
+            if let Some(qrcode) = json_body["qrcode"].as_str() {
+                bail!(ClientError::QRCodeRequired(qrcode.to_string()));
             }
 
             Ok(false)
         }
     }
+}
+
+/// Missing or non-boolean success is malformed, not a pending challenge.
+fn mfa_success(body: &serde_json::Value) -> Result<bool> {
+    body.get("success")
+        .and_then(serde_json::Value::as_bool)
+        .context("Invalid MFA response: missing or non-boolean success")
+}
+
+/// Serde messages can embed arbitrary response values. Keep only category/location.
+fn safe_json_error(stage: &'static str, error: serde_json::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{}: {:?} at line {}, column {}",
+        stage,
+        error.classify(),
+        error.line(),
+        error.column()
+    )
 }
 
 /// Extract the __brs_mit cookie from a string, usually the response of the `/connexion/` page.
@@ -537,11 +588,11 @@ impl BoursoWebClient {
 /// The __brs_mit cookie as a string.
 fn extract_brs_mit_cookie(res: &str) -> Result<String> {
     let brs_mit_cookie = BRS_MIT_COOKIE_REGEX
-        .captures(&res)
+        .captures(res)
         .and_then(|c| c.name("brs_mit_cookie"))
         .map(|m| m.as_str().to_string())
         .ok_or_else(|| {
-            error!("{}", res);
+            error!("Could not extract brs mit cookie");
             anyhow::anyhow!("Could not extract brs mit cookie")
         })?;
 
@@ -550,11 +601,11 @@ fn extract_brs_mit_cookie(res: &str) -> Result<String> {
 
 fn extract_token(res: &str) -> Result<String> {
     let token = TOKEN_REGEX
-        .captures(&res)
+        .captures(res)
         .and_then(|c| c.name("token"))
         .map(|m| m.as_str().trim().to_string())
         .ok_or_else(|| {
-            error!("{}", res);
+            error!("Could not extract form token");
             anyhow::anyhow!("Could not extract form token")
         })?;
 
@@ -569,19 +620,18 @@ fn extract_token(res: &str) -> Result<String> {
 /// A tuple containing the resource ID and form state as strings.
 fn extract_otp_params(res: &str) -> Result<(String, String)> {
     let challenge_json = OTP_PARAMS_REGEX
-        .captures(&res)
+        .captures(res)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str())
         .ok_or_else(|| {
-            error!("{}", res);
+            error!("Could not extract authentication challenge parameters");
             anyhow::anyhow!("Could not extract authentication challenge parameters")
         })
         .and_then(|challenge_str| {
             // HTML decode the JSON string (replace &quot; with ")
             let decoded = challenge_str.replace("&quot;", "\"");
-            serde_json::from_str::<serde_json::Value>(&decoded).map_err(|e| {
-                anyhow::anyhow!("Could not parse authentication challenge JSON: {}", e)
-            })
+            serde_json::from_str::<serde_json::Value>(&decoded)
+                .map_err(|e| safe_json_error("Could not parse authentication challenge JSON", e))
         })?;
 
     let params = &challenge_json["challenges"][0]["parameters"]["formScreen"]["actions"]["check"]
@@ -592,14 +642,14 @@ fn extract_otp_params(res: &str) -> Result<(String, String)> {
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
-                error!("{}", res);
+                error!("Could not extract resourceId");
                 anyhow::anyhow!("Could not extract resourceId")
             })?,
         params["formState"]
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
-                error!("{}", res);
+                error!("Could not extract formState");
                 anyhow::anyhow!("Could not extract formState")
             })?,
     ))
@@ -607,11 +657,11 @@ fn extract_otp_params(res: &str) -> Result<(String, String)> {
 
 fn extract_user_contact(res: &str) -> Result<String> {
     let contact_user = USER_CONTACT_REGEX
-        .captures(&res)
+        .captures(res)
         .and_then(|c| c.name("contact_user"))
         .map(|m| m.as_str().trim().to_string())
         .ok_or_else(|| {
-            error!("{}", res);
+            error!("Could not extract user contact");
             anyhow::anyhow!("Could not extract user contact")
         })?;
 
@@ -625,14 +675,26 @@ mod tests {
     #[test]
     fn test_extract_brs_mit_cookie() {
         let res = r#"<!DOCTYPE html> \n<html>\n<head>\n    <script type="text/javascript">\n    document.cookie="__brs_mit=8e6912eb6a0268f0a2411668b8bf289f; domain=." + window.location.hostname + "; path=/; ";\n    window.location.reload();\n    </script>\n</head>\n<body>\n</body>\n</html>\n\n"#;
-        let brs_mit_cookie = extract_brs_mit_cookie(&res).unwrap();
+        let brs_mit_cookie = extract_brs_mit_cookie(res).unwrap();
         assert_eq!(brs_mit_cookie, "8e6912eb6a0268f0a2411668b8bf289f");
     }
 
     #[test]
     fn test_extract_token() {
         let res = r#"data-backspace><i class="form-row-circles-password__backspace-icon / c-icon c-icon--backspace u-block"></i></button></div></div></div><input  id="form_ajx" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[ajx]" value="1" ><input  autocomplete="off" aria-label="Renseignez votre mot de passe en sélectionnant les 8 chiffres sur le clavier virtuel accessible ci-après par votre liseuse." data-matrix-password="1" id="form_password" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[password]" value="" ><input  data-password-ack="1" id="form_passwordAck" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[passwordAck]" value="{&quot;js&quot;:false}" ><input  data-authentication-factor-webauthn-detection="data-authentication-factor-webauthn-detection" id="form_platformAuthenticatorAvailable" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[platformAuthenticatorAvailable]" value="" ><input  data-matrix-random-challenge="1" id="form_matrixRandomChallenge" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[matrixRandomChallenge]" value="" ><input  id="form__token" type="hidden" class="c-field__input" data-brs-text-input="data-brs-text-input" name="form[_token]" value="45ed28b1-76ff-46a2-9202-0ee01928e6bb" ><hx:include id="hinclude__36d8139868f4bef54611a886784a3cbb"  src="/connexion/clavier-virtuel"><div data-matrix-placeholder class="sasmap sasmap--placeholder"><div class="bouncy-loader "><div class="bouncy-loader__balls"><div class="bouncy-loader__ball bouncy-loader__ball--left"></div><div class="bouncy-loader__ball bouncy-loader__ball--center"></div><div class="bouncy-loader__ball bouncy-loader__ball--right"></div></div></div></div></hx:include><div class="narrow-modal-window__input-container"><div class="u-text-center  o-vertical-interval-bottom "><div class="o-grid"><div class="o-grid__item"><button class="c-button--fancy c-button c-button--fancy u-1/1 c-button--primary"        type="submit"        data-login-submit       ><span class="c-button__text">Je me connecte</span></button></div><div class="o-grid__item  u-hidden" data-login-go-to-webauthn-wrapper><button class="c-button--fancy c-button c-button--fancy u-1/1 c-button--secondary"        type="button"        data-login-go-to-webauthn       ><span class="c-button__text">Clé de sécurité</span></button></div></div></div><div class="u-text-center"><a class="c-button--fancy c-button c-button--fancy u-1/1 c-button--tertiary c-button--link"        href="/connexion/mot-de-passe/retrouver"        data-pjax       ><span class="c-button__text">Mot de passe oublié ?</span></a></div></div><div class="narrow-modal-window__back-link"><button class="c-button--nav-back c-button u-1/1@xs-max c-button--text"        type="button"        data-login-back-to-login data-login-change-user-action="/connexion/oublier-identifiant"       ><span class="c-button__text"><div class="o-flex o-flex--align-center"><div class="c-button__icon"><svg xmlns="http://www.w3.org/2000/svg" width="7.8" height="14" viewBox="0 0 2.064 3.704"><path d="M1.712 3.644L.082 2.018a.212.212 0 0 1-.022-.02.206.206 0 0 1-.06-.146.206.206 0 0 1 .06-.147.212.212 0 0 1 .022-.019L1.712.06a.206.206 0 0 1 .291 0 .206.206 0 0 1 0 .291L.5 1.852l1.504 1.501a.206.206 0 0 1 0 .291.205.205 0 0 1-.146.06.205.205 0 0 1-.145-.06z"/></svg></div><div class="c-button__content">Mon identifiant</div></div></span></button></div></div><footer class="narrow-modal-footer narrow-modal-footer--mobile" data-transition-view-footer><div class="narrow-modal-footer__item narrow-modal-footer__item--mobile"><a href="" class="c-link c-link--icon c-link--pull-up c-link--subtle""#;
-        let token = extract_token(&res).unwrap();
+        let token = extract_token(res).unwrap();
         assert_eq!(token, "45ed28b1-76ff-46a2-9202-0ee01928e6bb");
     }
 }
+
+#[cfg(test)]
+mod http_tests;
+
+#[cfg(test)]
+mod logging_tests;
+
+#[cfg(test)]
+mod auth_tests;
+
+#[cfg(test)]
+mod newpad_tests;

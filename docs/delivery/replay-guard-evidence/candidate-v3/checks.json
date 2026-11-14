@@ -1,0 +1,199 @@
+[
+  {
+    "check": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit": 0,
+    "seconds": 0.1
+  },
+  {
+    "check": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit": 0,
+    "seconds": 0.08
+  },
+  {
+    "check": "tests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.09
+  },
+  {
+    "check": "dca",
+    "command": [
+      "bash",
+      "scripts/test-dca.sh"
+    ],
+    "exit": 0,
+    "seconds": 0.7
+  },
+  {
+    "check": "package",
+    "command": [
+      "bash",
+      "scripts/package-release-test.sh"
+    ],
+    "exit": 0,
+    "seconds": 0.13
+  },
+  {
+    "check": "ci-local",
+    "command": [
+      "python3",
+      "scripts/test-ci-local.py"
+    ],
+    "exit": 0,
+    "seconds": 0.05
+  },
+  {
+    "check": "coverage",
+    "command": [
+      "bash",
+      "scripts/coverage.sh",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 3.1
+  },
+  {
+    "check": "repeat-1",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.05
+  },
+  {
+    "check": "repeat-2",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.06
+  },
+  {
+    "check": "repeat-3",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.08
+  },
+  {
+    "check": "repeat-4",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.07
+  },
+  {
+    "check": "repeat-5",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.06
+  },
+  {
+    "check": "repeat-6",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.06
+  },
+  {
+    "check": "repeat-7",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.06
+  },
+  {
+    "check": "repeat-8",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.06
+  },
+  {
+    "check": "repeat-9",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.07
+  },
+  {
+    "check": "repeat-10",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--offline"
+    ],
+    "exit": 0,
+    "seconds": 2.07
+  }
+]

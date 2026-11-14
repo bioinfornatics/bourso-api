@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "bourso",
+  "project_id": "ca44e3c2-f410-4302-a51b-e663aa07cbd8"
+}

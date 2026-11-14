@@ -1,8 +1,18 @@
 pub mod account;
+#[path = "client/bank_money.rs"]
+pub(crate) mod bank_money;
 pub mod client;
 pub mod constants;
 
-#[cfg(not(tarpaulin_include))]
 pub fn get_client() -> client::BoursoWebClient {
     client::BoursoWebClient::new()
 }
+
+#[path = "client/outcome.rs"]
+pub mod outcome;
+pub use outcome::{OutcomeOperation, OutcomeStage, OutcomeUnknown};
+
+pub mod replay_guard;
+
+pub mod financial_session;
+pub use financial_session::FinancialSession;
