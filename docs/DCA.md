@@ -157,3 +157,12 @@ They create no real credentials and make no bank calls. Bash 3-compatible syntax
 and BSD/GNU stat handling target macOS portability; a Linux run does **not** prove
 macOS/launchd operation. Trusted automatic financial confirmation is missing,
 so passing this suite cannot close `.27`, `.4`, `.6`, `.8`, or a production gate.
+
+### Rust session coordination
+
+The launched CLI now uses the same mandatory `FinancialSession` / `.42`
+`replay.lock` and `replay-unresolved.json` as API callers choosing its explicit
+`BOURSO_DATA_DIR` (otherwise `~/.bourso`). There is no public raw financial API.
+This does **not** merge the DCA process journal with the Rust journal: both may
+require independent exact-attempt operator review. Neither review retries or
+clears the other. The wrapper's no-retry and child-result semantics are unchanged.

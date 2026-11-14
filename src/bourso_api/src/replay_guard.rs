@@ -1,8 +1,9 @@
 //! Opt-in, conservative local replay barrier for orders and immediate transfers.
 //!
 //! All cooperating callers must explicitly choose the same absolute directory,
-//! with trusted ancestors on a local Unix filesystem. Raw bank APIs bypass this
-//! barrier; the CLI and DCA journals are separate. There is no global storage.
+//! with trusted ancestors on a local Unix filesystem. Public financial APIs use
+//! FinancialSession with this same guard; CLI shares its domain, DCA is separate.
+//! There is no global storage.
 //!
 //! The lock is held for this handle's lifetime. A reservation is written and
 //! flushed before the closure is called, and is NEVER automatically cleared,
@@ -22,8 +23,8 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut guard = ReplayGuard::open("/trusted/private/bourso-library")?;
 //! let original_result = guard.invoke(OutcomeOperation::Order, || async {
-//!     // Invoke order/order_detailed here, or construct AND fully consume a
-//!     // transfer_funds/transfer_money stream inside this async block.
+//!     // Generic non-bank work only; public financial calls require
+//!     // FinancialSession, which already reserves this domain.
 //!     Ok::<_, anyhow::Error>("original result")
 //! }).await?;
 //! // The inner result and its downcastable errors are untouched.
@@ -389,7 +390,14 @@ mod tests {
             "bourso-api-replay-inherited-{:032x}",
             rand::random::<u128>()
         ));
-        let guard = ReplayGuard::open(&path).unwrap();
+        let mut guard = ReplayGuard::open(&path).unwrap();
+        crate::outcome::tests::run(async {
+            guard
+                .invoke(OutcomeOperation::Order, || async {})
+                .await
+                .unwrap();
+        });
+        let journal = fs::read(path.join(JOURNAL)).unwrap();
         // try_clone duplicates the open file description, just like a transient
         // descriptor inherited by another thread's fork before close-on-exec.
         // The guard itself does not expose or clone its descriptor publicly.
@@ -397,11 +405,40 @@ mod tests {
         drop(guard);
         let reopened = ReplayGuard::open(&path)
             .expect("owner drop releases domain even before inherited descriptor closes");
+        assert_eq!(fs::read(path.join(JOURNAL)).unwrap(), journal);
+        assert!(reopened.unresolved().unwrap().is_some());
         drop(inherited);
+        assert!(ReplayGuard::open(&path).is_err());
         drop(reopened);
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[test]
+    fn validation_error_releases_with_duplicate_alive_and_preserves_journal() {
+        use std::os::unix::fs::MetadataExt;
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("bourso-validation-{:032x}", rand::random::<u128>()));
+        let guard = ReplayGuard::open(&path).unwrap();
+        fs::write(path.join(JOURNAL), b"invalid journal: preserve").unwrap();
+        let duplicate = guard.lock.try_clone().unwrap();
+        let inode = duplicate.metadata().unwrap().ino();
+        assert!(guard.unresolved().is_err());
+        drop(guard);
+        let reopened =
+            ReplayGuard::open(&path).expect("validation error unlocks despite duplicate");
+        assert_eq!(fs::metadata(path.join(LOCK)).unwrap().ino(), inode);
+        assert_eq!(
+            fs::read(path.join(JOURNAL)).unwrap(),
+            b"invalid journal: preserve"
+        );
+        drop(duplicate);
+        assert!(ReplayGuard::open(&path).is_err());
+        assert!(reopened.unresolved().is_err());
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
     #[test]
     fn injected_write_and_flush_failures_never_call_and_never_clear() {
         for fault in [Fault::Write, Fault::Flush] {

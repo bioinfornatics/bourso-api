@@ -39,7 +39,8 @@ impl BoursoWebClient {
     ///
     /// # Returns
     /// Order ID and order price limit
-    pub async fn order(
+    #[cfg(test)]
+    pub(crate) async fn order(
         &self,
         side: OrderSide,
         account: &Account,
@@ -57,7 +58,7 @@ impl BoursoWebClient {
     /// Nonempty acceptability messages require review; no warning classification
     /// or positive provider-state contract is assumed. Post-send failures remain
     /// [`OutcomeUnknown`]; callers must not automatically retry.
-    pub async fn order_detailed(
+    pub(crate) async fn order_detailed(
         &self,
         side: OrderSide,
         account: &Account,
@@ -280,13 +281,8 @@ impl BoursoWebClient {
         Ok(response)
     }
 
-    /// Cancel an order that has not been executed yet
-    ///
-    /// # Arguments
-    ///
-    /// * `account` - Account to use. Must be a trading account
-    /// * `order_id` - ID of the order to cancel
-    pub async fn cancel_order(&self, account: &Account, order_id: &str) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) async fn cancel_order(&self, account: &Account, order_id: &str) -> Result<()> {
         let url = get_cancel_order_url(&self.config)?;
         let response = self
             .client
@@ -348,6 +344,7 @@ fn get_order_confirm_url(config: &Config) -> Result<String> {
     ))
 }
 
+#[cfg(test)]
 fn get_cancel_order_url(config: &Config) -> Result<String> {
     Ok(format!(
         "{}/orderdetail/cancel",

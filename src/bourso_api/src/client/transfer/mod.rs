@@ -417,7 +417,8 @@ impl BoursoWebClient {
     ///
     /// ## Returns
     /// A stream of progress updates for the transfer.
-    pub fn transfer_funds(
+    #[cfg(test)]
+    pub(crate) fn transfer_funds(
         &self,
         amount: f64,
         from_account: Account,
@@ -434,7 +435,7 @@ impl BoursoWebClient {
     ///
     /// `reason` uses the same max 50 UTF-8 bytes local policy as `transfer_funds`;
     /// provider contract unverified. The supplied text is preserved verbatim.
-    pub fn transfer_money(
+    pub(crate) fn transfer_money(
         &self,
         amount: Money,
         from_account: Account,

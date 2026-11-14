@@ -183,7 +183,11 @@ Results are explicit on stderr, even with logs off: exit `2` means this command
 did not invoke its financial API; `3` means response received but unverified; `4`
 means outcome unknown (possibly not emitted). Every invoked attempt retains a
 private replay barrier until explicit operator review. See [the CLI guard and
-review procedure](docs/FINANCIAL_GUARD.md); the APIs themselves remain unguarded.
+review procedure](docs/FINANCIAL_GUARD.md). Library submissions now require
+[`FinancialSession`](docs/LIBRARY_REPLAY_GUARD.md), with no public raw/legacy
+financial methods or cancellation. API callers explicitly choose the same
+absolute directory as the CLI to cooperate; DCA is a separate domain. Non-Unix
+financial mutations refuse locally; read/authentication APIs remain available.
 
 Quantity must be nonzero; the CLI uses bank-prefilled order options and exposes
 no price-limit/expiration switches. Cancellation is not exposed by the CLI.

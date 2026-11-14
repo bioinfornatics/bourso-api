@@ -37,3 +37,18 @@ fn unsupported_platform_refuses_before_inspecting_caller_path() {
         GuardError::UnsupportedPlatform
     );
 }
+
+#[test]
+fn financial_session_refuses_before_inspecting_path() {
+    struct UninspectedPath;
+    impl AsRef<Path> for UninspectedPath {
+        fn as_ref(&self) -> &Path {
+            panic!("session must not inspect unsupported path")
+        }
+    }
+    assert_eq!(
+        bourso_api::FinancialSession::open(UninspectedPath).unwrap_err(),
+        GuardError::UnsupportedPlatform
+    );
+    let _ = bourso_api::get_client();
+}

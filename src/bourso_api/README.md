@@ -59,9 +59,9 @@ fn average_close(quotes: &GetTicksEOD) -> anyhow::Result<f64> {
 }
 ```
 
-### Exact transfer input, legacy float boundary
+### Exact transfer input and mandatory session
 
-Prefer `client::transfer::money::Money` and `transfer_money` for new integrations:
+Use `client::transfer::money::Money` and `FinancialSession::transfer_money`:
 
 ```rust
 use bourso_api::client::transfer::money::{Money, MoneyError};
@@ -77,12 +77,11 @@ fn exact_amount() -> Result<Money, MoneyError> {
 Input is unsigned ASCII decimal euros, with zero to two fractional digits
 (dot/comma), at least 10 EUR, and at most `u64::MAX` cents. Signs, whitespace,
 exponents, grouping and excess precision are rejected, never rounded.
-`transfer_funds(f64, ...)` remains a compatibility entry point: the shortest
-round-trip decimal spelling is validated under the same rules; non-finite,
-negative and sub-cent values are rejected without tolerance. Decimal strings
-avoid crossing that float boundary. Transfer methods return a lazy progress
-stream: validation/errors are observed when consumed; do not treat stream
-creation as a completed transfer.
+No public float/raw compatibility entry point remains. Financial submissions
+require an explicit `FinancialSession::open(absolute_trusted_directory)`.
+`session.transfer_money(&client, amount, from, to, reason).await` consumes the full
+internal stream and returns `Result<anyhow::Result<TransferProgress>, GuardError>`;
+only `SubmittedUnverified` is a terminal response, never verified execution.
 
 Balances and transaction amounts still expose `f64` for compatibility. Bank
 strings are parsed through checked exact cents, but that does not turn all
@@ -96,21 +95,23 @@ evaluation disabled. `write_export_atomically` publishes fully prepared content
 through a synced sibling temporary file; it does not itself validate arbitrary
 caller-provided bytes. Protect the destination directory and exported data.
 
-`order` preserves explicit side/nonzero quantity and validates calendar dates,
+`FinancialSession::order` preserves explicit side/nonzero quantity and validates calendar dates,
 but check/confirm business semantics remain unsafe/unverified. Its returned
-order ID/optional price is **not** proof of execution. Transfer confirmation
+`OrderSubmission` is **not** proof of execution. Transfer confirmation
 likewise lacks a verified bank receipt contract. Public typed `OutcomeUnknown`
 identifies final submission failures, with expurgated diagnostics and an explicitly
 sensitive reference accessor; it is not durable recovery or reconciliation.
 Never retry a financial POST blindly after an error or a dropped future.
 
-An additive `replay_guard::ReplayGuard` can reserve a private local journal before
-invoking a closure, preserving original results and blocking cooperative replay
-until explicit operator review. Storage requires an absolute consumer-provided
-path; no global directory is selected. Construct and fully consume transfer
-streams inside the guarded closure. Raw APIs bypass it, and CLI/DCA journals
-remain separate. See [library replay barrier](../../docs/LIBRARY_REPLAY_GUARD.md)
-for its API, result nesting, Unix-only storage, crash and power-loss limits.
+`FinancialSession` reserves the `.42` private journal before any financial request,
+preserving original inner errors and blocking replay until exact-ID local review.
+Its `order(&client, side, &account, symbol, quantity, order_data).await` returns
+`Result<anyhow::Result<OrderSubmission>, GuardError>`. No client/guard extraction,
+public raw methods, legacy feature or public cancellation is available.
+Read/authentication APIs are unchanged. Storage needs an explicit absolute path;
+use the CLI's `BOURSO_DATA_DIR` or `~/.bourso` to share its Rust domain. DCA remains
+separate. See [mandatory financial session](../../docs/LIBRARY_REPLAY_GUARD.md)
+for signatures, Unix-only mutation support, review and no-fsync limits.
 Provider obligations `bourso-y3u.4` and `bourso-y3u.8` remain open.
 
 ## Network/test boundary

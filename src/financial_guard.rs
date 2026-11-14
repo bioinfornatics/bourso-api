@@ -1,24 +1,13 @@
-//! Conservative CLI-only replay barrier; not provider idempotency or reconciliation.
+//! CLI reporting over the same mandatory API session/domain; no second journal.
 use crate::settings;
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::{
-    fmt,
-    fs::{self, File},
-    future::Future,
-    io::{Read, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use bourso_api::{
+    account::Account,
+    client::{trade::order::OrderSide, transfer::money::Money, BoursoWebClient},
+    replay_guard::{GuardError, ReviewDecision},
+    FinancialSession,
 };
-
-const JOURNAL: &str = "financial-unresolved.json";
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Operation {
-    Order,
-    Transfer,
-}
+use std::{fmt, path::Path};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -69,14 +58,6 @@ impl fmt::Display for Report {
 }
 impl std::error::Error for Report {}
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Entry {
-    version: u8,
-    attempt: String,
-    operation: Operation,
-}
-
 pub fn is_financial(matches: &clap::ArgMatches) -> bool {
     matches!(
         matches.subcommand_name(),
@@ -84,117 +65,80 @@ pub fn is_financial(matches: &clap::ArgMatches) -> bool {
     )
 }
 
-/// The stable lock file is never deleted; dropping the handle releases only its
-/// OS lock. The unresolved journal deliberately survives drop, panic and crash.
-struct Guard {
-    directory: PathBuf,
-    _lock: File,
-}
-impl Drop for Guard {
-    fn drop(&mut self) {
-        // A concurrent spawn may inherit the file description before exec.
-        // Explicitly unlock rather than relying on closing only our descriptor;
-        // preserve both the stable lock inode and the unresolved journal.
-        let _ = self._lock.unlock();
+// Never hide an unexpected old reservation. Do not read, migrate or delete it.
+fn open_at(directory: &Path) -> Result<FinancialSession> {
+    let session = FinancialSession::open(directory)?;
+    match std::fs::symlink_metadata(directory.join("financial-unresolved.json")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(session),
+        _ => Err(Report { state: State::NotEmitted, attempt: None,
+            detail: "Unexpected legacy financial journal; manual investigation required; no financial API invoked." }.into()),
     }
 }
-impl Guard {
-    fn open(directory: &Path) -> Result<Self> {
-        settings::private_directory(directory)?;
-        let lock = settings::open_private_file(&directory.join("financial.lock"))?;
-        lock.try_lock()
-            .map_err(|_| anyhow::anyhow!("Financial storage unavailable"))?;
-        Ok(Self {
-            directory: directory.to_owned(),
-            _lock: lock,
-        })
-    }
-    fn entry(&self) -> Result<Option<Entry>> {
-        let file = match settings::open_existing_regular(&self.directory.join(JOURNAL), true) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        anyhow::ensure!(file.metadata()?.len() <= 256, "Invalid financial journal");
-        let mut content = String::new();
-        file.take(257).read_to_string(&mut content)?;
-        let entry: Entry = serde_json::from_str(&content)?;
-        anyhow::ensure!(
-            entry.version == 1 && valid_id(&entry.attempt),
-            "Invalid financial journal"
-        );
-        Ok(Some(entry))
-    }
-    fn ensure_clear(&self) -> Result<()> {
-        if let Some(entry) = self.entry()? {
-            return Err(Report {
-                state: State::NotEmitted,
-                attempt: Some(entry.attempt),
-                detail: "This invocation blocked by unresolved prior attempt (possibly-not-emitted). Reconcile with the bank, then use financial-review; never retry automatically.",
-            }.into());
-        }
-        Ok(())
-    }
-    fn begin(&self, operation: Operation) -> Result<String> {
-        self.ensure_clear()?;
-        let attempt = format!(
-            "{:x}-{:x}",
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
-            std::process::id()
-        );
-        let entry = Entry {
-            version: 1,
-            attempt: attempt.clone(),
-            operation,
-        };
-        let bytes = serde_json::to_vec(&entry)?;
-        let mut file = settings::create_private_file(&self.directory.join(JOURNAL))?;
-        // No fsync guarantee. Partial writes remain blocked; never unlink on error.
-        file.write_all(&bytes)?;
-        file.flush()?;
-        Ok(attempt)
-    }
-}
-
-fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
-}
-
-/// Acquired before authentication; persistence occurs only at invocation. Keeping
-/// this handle across the await also excludes another process or review command.
-pub struct Session(Guard);
+/// Acquired before authentication, retained through the complete API operation.
+#[derive(Debug)]
+pub struct Session(FinancialSession);
 impl Session {
     pub fn open() -> Result<Self> {
         Self::at(&settings::storage_directory()?)
     }
     fn at(directory: &Path) -> Result<Self> {
-        let guard = Guard::open(directory)?;
-        guard.ensure_clear()?;
-        Ok(Self(guard))
-    }
-    /// Invoke the closure only after the unresolved entry is completely written.
-    /// Ordinary errors are conservatively unknown: there is no final-POST hook.
-    pub async fn invoke<F, Fut>(&self, operation: Operation, call: F) -> Report
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<()>>,
-    {
-        let attempt = match self.0.begin(operation) {
-            Ok(attempt) => attempt,
-            Err(_) => return Report::not_emitted(),
-        };
-        let state = match call().await {
-            Ok(()) => State::ResponseUnverified,
-            Err(_) => State::OutcomeUnknown,
-        };
-        Report {
-            state,
-            attempt: Some(attempt),
-            detail: "Bank acceptance/execution not established; possibly-not-emitted if the API stopped before submission. Replay blocked. Reconcile in the bank before explicit financial-review.",
+        let session = open_at(directory)?;
+        if let Some(attempt) = session.unresolved()? {
+            return Err(Report { state: State::NotEmitted, attempt: Some(attempt.id().to_owned()),
+                detail: "This invocation blocked by unresolved prior attempt (possibly-not-emitted). Reconcile with the bank, then use financial-review; never retry automatically." }.into());
         }
+        Ok(Self(session))
+    }
+    pub async fn order(
+        &mut self,
+        client: &BoursoWebClient,
+        side: OrderSide,
+        account: &Account,
+        symbol: &str,
+        quantity: usize,
+    ) -> Report {
+        let result = self
+            .0
+            .order(client, side, account, symbol, quantity, None)
+            .await;
+        self.report(result)
+    }
+    pub async fn transfer_money(
+        &mut self,
+        client: &BoursoWebClient,
+        amount: Money,
+        from: Account,
+        to: Account,
+        reason: Option<String>,
+    ) -> Report {
+        let result = self
+            .0
+            .transfer_money(client, amount, from, to, reason)
+            .await;
+        self.report(result)
+    }
+    fn report<T>(&self, result: std::result::Result<Result<T>, GuardError>) -> Report {
+        Report::from_result(
+            result,
+            self.0.unresolved().ok().flatten().as_ref().map(|a| a.id()),
+        )
     }
 }
-
+impl Report {
+    /// Redact all bank and storage errors, retaining only a valid local attempt ID.
+    pub fn from_result<T>(
+        result: std::result::Result<Result<T>, GuardError>,
+        attempt: Option<&str>,
+    ) -> Self {
+        let state = match result {
+            Err(_) => return Self::not_emitted(),
+            Ok(Ok(_)) => State::ResponseUnverified,
+            Ok(Err(_)) => State::OutcomeUnknown,
+        };
+        Self { state, attempt: attempt.filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).map(str::to_owned),
+            detail: "Bank acceptance/execution not established; possibly-not-emitted if the API stopped before submission. Replay blocked. Reconcile in the bank before explicit financial-review." }
+    }
+}
 pub fn review_command() -> clap::Command {
     use clap::{Arg, Command};
     Command::new("financial-review")
@@ -204,41 +148,60 @@ pub fn review_command() -> clap::Command {
 }
 
 pub fn review(matches: &clap::ArgMatches) -> Result<()> {
-    let directory = settings::storage_directory()?;
-    let guard = Guard::open(&directory)?;
-    let entry = guard.entry()?;
+    let mut session = open_at(&settings::storage_directory()?)?;
     match (
         matches.get_one::<String>("attempt"),
         matches.get_one::<String>("decision"),
     ) {
         (None, None) => {
-            if let Some(entry) = entry {
-                println!("financial-journal: unresolved attempt={}; possibly-not-emitted; reconcile before review", entry.attempt);
+            if let Some(entry) = session.unresolved()? {
+                println!("financial-journal: unresolved attempt={}; possibly-not-emitted; reconcile before review", entry.id());
             } else {
                 println!("financial-journal: clear; no bank outcome asserted");
             }
         }
         (Some(attempt), Some(decision)) => {
-            let entry = entry.context("No unresolved attempt")?;
-            anyhow::ensure!(
-                valid_id(attempt) && *attempt == entry.attempt,
-                "Attempt does not match"
-            );
-            anyhow::ensure!(
-                matches!(decision.as_str(), "not-applied" | "operator-reviewed"),
-                "Invalid review decision"
-            );
-            fs::remove_file(directory.join(JOURNAL))?;
+            let decision_value = match decision.as_str() {
+                "not-applied" => ReviewDecision::NotApplied,
+                "operator-reviewed" => ReviewDecision::OperatorReviewed,
+                _ => anyhow::bail!("Invalid review decision"),
+            };
+            session
+                .review(attempt, decision_value)
+                .context("Local review refused")?;
             println!("financial-review: local barrier released; decision={decision}; no bank outcome asserted");
         }
         _ => anyhow::bail!("Review requires attempt and decision"),
     }
     Ok(())
 }
-
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use bourso_api::{replay_guard::ReplayGuard, OutcomeOperation as Operation};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    const JOURNAL: &str = "replay-unresolved.json";
+    struct TestSession(ReplayGuard);
+    impl TestSession {
+        fn at(path: &Path) -> Result<Self> {
+            Ok(Self(ReplayGuard::open(path)?))
+        }
+        async fn invoke<F, Fut>(&mut self, op: Operation, call: F) -> Report
+        where
+            F: FnOnce() -> Fut,
+            Fut: std::future::Future<Output = Result<()>>,
+        {
+            let result = self.0.invoke(op, call).await;
+            Report::from_result(
+                result,
+                self.0.unresolved().ok().flatten().as_ref().map(|a| a.id()),
+            )
+        }
+    }
     use futures_util::FutureExt;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -272,7 +235,7 @@ mod tests {
     async fn responses_and_errors_both_preserve_replay_barrier_without_bank_data() {
         for success in [true, false] {
             let temp = Temp::new();
-            let session = Session::at(&temp.0).unwrap();
+            let mut session = TestSession::at(&temp.0).unwrap();
             let report = session
                 .invoke(Operation::Order, || async {
                     // Independent observable: journal exists BEFORE the fake API runs.
@@ -308,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_future_keeps_journal_and_blocks_replay_after_lock_drop() {
         let temp = Temp::new();
-        let session = Session::at(&temp.0).unwrap();
+        let mut session = TestSession::at(&temp.0).unwrap();
         let calls = AtomicUsize::new(0);
         let mut future = Box::pin(session.invoke(Operation::Transfer, || async {
             calls.fetch_add(1, Ordering::SeqCst);
@@ -337,74 +300,13 @@ mod tests {
         }
         drop(first);
         assert!(Session::at(&temp.0).is_ok());
-        assert!(temp.0.join("financial.lock").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn financial_owner_drop_releases_with_duplicate_alive() {
-        use std::os::unix::fs::MetadataExt;
-        let temp = Temp::new();
-        let guard = Guard::open(&temp.0).unwrap();
-        guard.begin(Operation::Order).unwrap();
-        let journal = fs::read(temp.0.join(JOURNAL)).unwrap();
-        let duplicate = guard._lock.try_clone().unwrap();
-        let inode = duplicate.metadata().unwrap().ino();
-        assert!(Guard::open(&temp.0).is_err());
-        drop(guard);
-        let reopened = Guard::open(&temp.0).expect("owner must unlock despite duplicate");
-        assert_eq!(
-            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
-            inode
-        );
-        assert_eq!(fs::read(temp.0.join(JOURNAL)).unwrap(), journal);
-        assert!(reopened.ensure_clear().is_err());
-        drop(duplicate);
-        assert!(Guard::open(&temp.0).is_err());
-        drop(reopened);
-        assert!(Guard::open(&temp.0).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn financial_preparation_error_releases_with_duplicate_alive() {
-        use std::os::unix::fs::MetadataExt;
-        let temp = Temp::new();
-        fs::write(temp.0.join(JOURNAL), b"invalid journal: preserve").unwrap();
-        let mut duplicate = None;
-        let result = (|| -> Result<Session> {
-            let guard = Guard::open(&temp.0)?;
-            duplicate = Some(guard._lock.try_clone()?);
-            // Same post-acquisition validation and error exit as Session::at.
-            guard.ensure_clear()?;
-            Ok(Session(guard))
-        })();
-        assert!(result.is_err());
-        let duplicate = duplicate.unwrap();
-        let inode = duplicate.metadata().unwrap().ino();
-        let reopened =
-            Guard::open(&temp.0).expect("validation error must unlock despite duplicate");
-        assert_eq!(
-            fs::metadata(temp.0.join("financial.lock")).unwrap().ino(),
-            inode
-        );
-        assert_eq!(
-            fs::read(temp.0.join(JOURNAL)).unwrap(),
-            b"invalid journal: preserve"
-        );
-        drop(duplicate);
-        assert!(Guard::open(&temp.0).is_err());
-        drop(reopened);
-        assert!(
-            Session::at(&temp.0).is_err(),
-            "invalid journal still blocks replay"
-        );
+        assert!(temp.0.join("replay.lock").exists());
     }
 
     #[tokio::test]
     async fn journal_creation_failure_does_not_invoke_fake_api() {
         let temp = Temp::new();
-        let session = Session::at(&temp.0).unwrap();
+        let mut session = TestSession::at(&temp.0).unwrap();
         fs::create_dir(temp.0.join(JOURNAL)).unwrap();
         let report = session
             .invoke(Operation::Order, || async { panic!("must not invoke") })
@@ -418,12 +320,12 @@ mod tests {
     async fn unix_private_modes_and_readonly_journal_fail_closed() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let temp = Temp::new();
-        let session = Session::at(&temp.0).unwrap();
+        let mut session = TestSession::at(&temp.0).unwrap();
         session.invoke(Operation::Order, || async { Ok(()) }).await;
         for (path, mode) in [
             (temp.0.clone(), 0o700),
             (temp.0.join(JOURNAL), 0o600),
-            (temp.0.join("financial.lock"), 0o600),
+            (temp.0.join("replay.lock"), 0o600),
         ] {
             assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, mode);
         }
@@ -437,7 +339,7 @@ mod tests {
     async fn readonly_directory_before_journal_write_prevents_invocation() {
         use std::os::unix::fs::PermissionsExt;
         let temp = Temp::new();
-        let session = Session::at(&temp.0).unwrap();
+        let mut session = TestSession::at(&temp.0).unwrap();
         fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o500)).unwrap();
         // A privileged user may bypass Unix mode checks. Verify the fixture,
         // rather than silently declaring a writable directory read-only.
@@ -490,12 +392,18 @@ mod tests {
         assert!(Session::at(&temp.0).is_err());
     }
 
+    fn run_reserve(guard: &mut ReplayGuard) {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(guard.invoke(Operation::Order, || async {}))
+            .unwrap();
+    }
     #[test]
     #[ignore = "only spawned by abrupt_process_exit_preserves_unresolved_journal"]
     fn crash_child() {
         let path = std::env::var_os("BOURSO_GUARD_CRASH_FIXTURE").unwrap();
-        let session = Session::at(Path::new(&path)).unwrap();
-        session.0.begin(Operation::Order).unwrap();
+        let mut session = TestSession::at(Path::new(&path)).unwrap();
+        crate::financial_guard::tests::run_reserve(&mut session.0);
         // process::exit skips destructors, modelling a process lost after journaling.
         std::process::exit(23);
     }

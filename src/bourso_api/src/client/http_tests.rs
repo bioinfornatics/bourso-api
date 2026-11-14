@@ -1320,7 +1320,43 @@ fn dropping_public_transfer_owner_after_final_post_disconnects_without_retry() {
     }
 }
 
-// LIBGUARD: real public order/transfer entrypoints through the opt-in guard.
+#[cfg(unix)]
+impl PublicSubmission {
+    async fn submit_session(
+        self,
+        session: &mut crate::FinancialSession,
+        client: &BoursoWebClient,
+    ) -> Result<anyhow::Result<()>, crate::replay_guard::GuardError> {
+        let account = crate::account::Account {
+            id: "SENTINEL_USER".into(),
+            ..Default::default()
+        };
+        match self.operation() {
+            crate::OutcomeOperation::Order => session
+                .order(
+                    client,
+                    super::trade::order::OrderSide::Buy,
+                    &account,
+                    "TEST",
+                    2,
+                    None,
+                )
+                .await
+                .map(|r| r.map(|_| ())),
+            crate::OutcomeOperation::Transfer => session
+                .transfer_money(
+                    client,
+                    "12.00".parse().unwrap(),
+                    account.clone(),
+                    account,
+                    Some("SENTINEL_BODY".into()),
+                )
+                .await
+                .map(|r| r.map(|_| ())),
+        }
+    }
+}
+// FinancialSession: public guarded entrypoints using private loopback transport.
 #[cfg(unix)]
 struct ReplayTemp(std::path::PathBuf);
 #[cfg(unix)]
@@ -1352,7 +1388,7 @@ const GUARDED_APIS: [PublicSubmission; 4] = [
 #[test]
 #[cfg(unix)]
 fn replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen() {
-    use crate::{replay_guard::ReplayGuard, OutcomeUnknown};
+    use crate::{FinancialSession as ReplayGuard, OutcomeUnknown};
     for api in GUARDED_APIS {
         run(async {
             let temp = ReplayTemp::new();
@@ -1362,15 +1398,8 @@ fn replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen() {
             let mut server = Server::new(replies);
             let mut client = fixture_client(server.address);
             client.config = logging_config();
-            let error = guard
-                .invoke(api.operation(), || {
-                    let json: serde_json::Value = serde_json::from_slice(
-                        &std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
-                    )
-                    .unwrap();
-                    assert_eq!(json["version"], 1);
-                    api.submit(&client)
-                })
+            let error = api
+                .submit_session(&mut guard, &client)
                 .await
                 .unwrap()
                 .unwrap_err()
@@ -1386,14 +1415,7 @@ fn replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen() {
             );
             drop(guard);
             let mut reopened = ReplayGuard::open(&temp.0).unwrap();
-            assert!(reopened
-                .invoke(api.operation(), || {
-                    panic!("reopened guard must not construct public submission");
-                    #[allow(unreachable_code)]
-                    api.submit(&client)
-                })
-                .await
-                .is_err());
+            assert!(api.submit_session(&mut reopened, &client).await.is_err());
             assert_eq!(
                 std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
                 bytes
@@ -1410,7 +1432,7 @@ fn replay_guard_public_errors_preserve_unknown_downcast_and_block_reopen() {
 #[test]
 #[cfg(unix)]
 fn replay_guard_owner_drop_after_complete_public_post_blocks_reopen() {
-    use crate::replay_guard::ReplayGuard;
+    use crate::FinancialSession as ReplayGuard;
     for api in GUARDED_APIS {
         run(async {
             let temp = ReplayTemp::new();
@@ -1420,7 +1442,7 @@ fn replay_guard_owner_drop_after_complete_public_post_blocks_reopen() {
             let mut server = Server::new(replies);
             let mut client = fixture_client(server.address);
             client.config = logging_config();
-            let mut pending = Box::pin(guard.invoke(api.operation(), || api.submit(&client)));
+            let mut pending = Box::pin(api.submit_session(&mut guard, &client));
             let mut observed = Vec::new();
             for expected in api.request_lines() {
                 match futures_util::future::select(Box::pin(server.event()), pending).await {
@@ -1453,14 +1475,7 @@ fn replay_guard_owner_drop_after_complete_public_post_blocks_reopen() {
                 Event::Disconnected
             ));
             let mut reopened = ReplayGuard::open(&temp.0).unwrap();
-            assert!(reopened
-                .invoke(api.operation(), || {
-                    panic!("drop/reopen must not issue another public request");
-                    #[allow(unreachable_code)]
-                    api.submit(&client)
-                })
-                .await
-                .is_err());
+            assert!(api.submit_session(&mut reopened, &client).await.is_err());
             assert_eq!(
                 std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
                 bytes
@@ -1477,7 +1492,7 @@ fn replay_guard_owner_drop_after_complete_public_post_blocks_reopen() {
 #[ignore]
 #[cfg(unix)]
 fn replay_guard_http_crash_child() {
-    use crate::replay_guard::ReplayGuard;
+    use crate::FinancialSession as ReplayGuard;
     let path = std::env::var_os("BOURSO_REPLAY_HTTP_PATH").unwrap();
     let address = std::env::var("BOURSO_REPLAY_HTTP_ADDRESS")
         .unwrap()
@@ -1492,7 +1507,7 @@ fn replay_guard_http_crash_child() {
         let mut client = fixture_client(address);
         client.config = logging_config();
         let api = GUARDED_APIS[index];
-        let _ = guard.invoke(api.operation(), || api.submit(&client)).await;
+        let _ = api.submit_session(&mut guard, &client).await;
         panic!("held submission must be killed before returning");
     });
 }
@@ -1509,7 +1524,7 @@ impl Drop for ReplayChild {
 #[test]
 #[cfg(unix)]
 fn replay_guard_process_crash_after_complete_public_post_blocks_reopen() {
-    use crate::replay_guard::{GuardError, ReplayGuard};
+    use crate::{replay_guard::GuardError, FinancialSession as ReplayGuard};
     for (index, api) in GUARDED_APIS.into_iter().enumerate() {
         run(async {
             let temp = ReplayTemp::new();
@@ -1548,14 +1563,7 @@ fn replay_guard_process_crash_after_complete_public_post_blocks_reopen() {
             assert!(matches!(server.event().await, Event::Disconnected));
             let mut reopened = ReplayGuard::open(&temp.0).unwrap();
             let client = fixture_client(server.address);
-            assert!(reopened
-                .invoke(api.operation(), || {
-                    panic!("crash/reopen must not issue another public request");
-                    #[allow(unreachable_code)]
-                    api.submit(&client)
-                })
-                .await
-                .is_err());
+            assert!(api.submit_session(&mut reopened, &client).await.is_err());
             assert_eq!(
                 std::fs::read(temp.0.join("replay-unresolved.json")).unwrap(),
                 bytes
@@ -1573,8 +1581,7 @@ fn replay_guard_nominal_public_outputs_remain_original_and_unresolved() {
         trade::order::{OrderConfirmResponse, OrderSide, OrderSubmissionStatus},
         transfer::TransferProgress,
     };
-    use crate::replay_guard::ReplayGuard;
-    use futures_util::StreamExt;
+    use crate::FinancialSession as ReplayGuard;
     for api in GUARDED_APIS {
         run(async {
             let temp = ReplayTemp::new();
@@ -1598,80 +1605,67 @@ fn replay_guard_nominal_public_outputs_remain_original_and_unresolved() {
                 id: "SENTINEL_USER".into(),
                 ..Default::default()
             };
-            match api {
-                PublicSubmission::Order => {
+            match api.operation() {
+                crate::OutcomeOperation::Order => {
                     let original = guard
-                        .invoke(api.operation(), || {
-                            client.order(OrderSide::Buy, &account, "TEST", 2, None)
-                        })
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(original.0, "SENTINEL_USER");
-                }
-                PublicSubmission::OrderDetailed => {
-                    let original = guard
-                        .invoke(api.operation(), || {
-                            client.order_detailed(OrderSide::Buy, &account, "TEST", 2, None)
-                        })
+                        .order(&client, OrderSide::Buy, &account, "TEST", 2, None)
                         .await
                         .unwrap()
                         .unwrap();
                     assert_eq!(original.order_id, "SENTINEL_USER");
+                    assert_eq!(original.order_price_limit, Some(0.0));
                     assert_eq!(original.status, OrderSubmissionStatus::SubmittedUnverified);
                 }
-                PublicSubmission::TransferFunds | PublicSubmission::TransferMoney => {
-                    let original: Vec<_> = guard
-                        .invoke(api.operation(), || async {
-                            match api {
-                                PublicSubmission::TransferFunds => {
-                                    client
-                                        .transfer_funds(
-                                            12.0,
-                                            account.clone(),
-                                            account,
-                                            Some("SENTINEL_BODY".into()),
-                                        )
-                                        .collect()
-                                        .await
-                                }
-                                PublicSubmission::TransferMoney => {
-                                    client
-                                        .transfer_money(
-                                            "12.00".parse().unwrap(),
-                                            account.clone(),
-                                            account,
-                                            Some("SENTINEL_BODY".into()),
-                                        )
-                                        .collect()
-                                        .await
-                                }
-                                _ => unreachable!(),
-                            }
-                        })
+                crate::OutcomeOperation::Transfer => {
+                    let original = guard
+                        .transfer_money(
+                            &client,
+                            "12.00".parse().unwrap(),
+                            account.clone(),
+                            account,
+                            Some("SENTINEL_BODY".into()),
+                        )
                         .await
+                        .unwrap()
                         .unwrap();
-                    assert!(original.iter().all(Result::is_ok));
-                    assert!(matches!(
-                        original.last().unwrap(),
-                        Ok(TransferProgress::SubmittedUnverified)
-                    ));
+                    assert!(matches!(original, TransferProgress::SubmittedUnverified));
                 }
             }
             assert!(guard.unresolved().unwrap().is_some());
             drop(guard);
             let mut reopened = ReplayGuard::open(&temp.0).unwrap();
-            assert!(reopened
-                .invoke(api.operation(), || async {
-                    panic!("nominal output must not release replay barrier")
-                })
-                .await
-                .is_err());
+            assert!(api.submit_session(&mut reopened, &client).await.is_err());
             for _ in api.request_lines() {
                 assert!(matches!(server.event().await, Event::Request(_)));
             }
             assert!(matches!(server.event().await, Event::QuietObserved));
             api.assert_requests(&server.finish());
+        });
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn financial_session_storage_rejection_emits_zero_requests_for_both_operations() {
+    use crate::{replay_guard::GuardError, FinancialSession};
+    for api in [
+        PublicSubmission::OrderDetailed,
+        PublicSubmission::TransferMoney,
+    ] {
+        run(async {
+            let temp = ReplayTemp::new();
+            let mut session = FinancialSession::open(&temp.0).unwrap();
+            std::fs::create_dir(temp.0.join("replay-unresolved.json")).unwrap();
+            let mut server = Server::new(vec![Reply::ObserveQuiet(SUBMISSION_QUIET_WINDOW)]);
+            let mut client = fixture_client(server.address);
+            client.config = logging_config();
+            assert!(matches!(
+                api.submit_session(&mut session, &client).await,
+                Err(GuardError::InvalidJournal)
+            ));
+            assert!(matches!(server.event().await, Event::QuietObserved));
+            assert!(server.finish().is_empty());
+            assert!(temp.0.join("replay-unresolved.json").is_dir());
         });
     }
 }

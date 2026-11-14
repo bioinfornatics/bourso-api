@@ -1,7 +1,7 @@
 # Financial CLI replay barrier (local, conservative)
 
 The CLI's `trade order new` and `transfer` commands now use a shared local replay
-barrier. Their existing API submissions remain enabled. This is **not** bank
+barrier. They use the mandatory library `FinancialSession`, not a second Rust journal. This is **not** bank
 idempotency, receipt validation, automated reconciliation or verified execution.
 No provider success/rejection states are invented.
 
@@ -9,25 +9,24 @@ No provider success/rejection states are invented.
 
 The guard uses `~/.bourso` or the absolute directory selected by `BOURSO_DATA_DIR`.
 Use the **same trusted directory** for all financial CLI invocations. Changing the
-directory, deleting files, using another machine or calling `bourso_api` directly
-bypasses this protection. Different credentials, accounts, symbols and operations
+directory, deleting files or using another machine bypasses this local domain.
+Direct API callers must explicitly select this same directory to cooperate. Different credentials, accounts, symbols and operations
 share one barrier in that directory: an unresolved order also blocks transfers.
 The launcher documented in [DCA.md](DCA.md) has a **separate** journal; if both
 barriers are unresolved, review each independently. Neither clears the other.
 
-- `financial.lock`: private stable regular file, held with an exclusive OS lock
+- `replay.lock`: private stable regular file, held with an exclusive OS lock
   across authentication, financial invocation and result handling. Never remove
   this file, even after a crash: the OS releases the lock when the process dies.
-- `financial-unresolved.json`: contains only schema version, operation kind and a
+- `replay-unresolved.json`: contains only schema version, operation kind and a
   locally generated attempt ID (not a bank ID or idempotency key). It is created
-  exclusively and written **before** invoking `order_detailed` or constructing
-  and polling `transfer_money`. An existing, malformed, partial, unreadable or
+  exclusively and written **before** starting the session's order or fully consumed transfer chain. An existing, malformed, partial, unreadable or
   unsafe journal blocks invocation. No error handler or destructor clears it.
 
 Existing private-storage helpers create/tighten Unix directories to `0700` and
 regular files to `0600`; symlinks and Unix multiply-linked files are refused.
 The directory and its ancestors must be trusted. This is not protection against
-malicious same-user path races. Windows ACLs are neither established nor tested.
+malicious same-user path races. Non-Unix financial session open refuses before network work; reads/authentication remain available. Windows ACLs are neither established nor tested.
 
 The guard has no final-POST boundary hook. An invocation error or cancellation
 may occur **before** any bank mutation: the unresolved attempt is explicitly
@@ -35,6 +34,10 @@ may occur **before** any bank mutation: the unresolved attempt is explicitly
 settings/argument/authentication/account-selection error before the financial API
 is invoked does not create an unresolved journal. A failed journal write also
 never invokes the API; any partial file is retained and blocks later attempts.
+
+Unexpected `financial-unresolved.json` (the old CLI journal) causes a fixed local
+refusal, including review; it is not read, migrated, deleted or silently ignored.
+The user declared no prior local journals; no legacy migration is provided.
 
 ## Results and exit status
 
@@ -55,9 +58,8 @@ financial result diagnostics. Review output goes to stdout.
 On termination/crash there may be no result line. After the pre-invocation journal
 write, replay remains blocked. Ordinary API errors (including `OutcomeUnknown`)
 and apparently successful responses never automatically release the barrier.
-Do not automate retries from these exit codes. Bank APIs and the legacy order
-API remain available without this CLI guard; direct library consumers must
-implement their own safe orchestration and redaction. `parse_matches` returns a
+Do not automate retries from these exit codes. No public raw/legacy financial API remains. Direct library consumers use the same
+mandatory session and must protect their own output/redaction. `parse_matches` returns a
 typed local `financial_guard::Report` error for completed guarded attempts, even
 for response-unverified; it is not a bank success API.
 

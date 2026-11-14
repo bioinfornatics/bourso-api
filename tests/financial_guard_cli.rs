@@ -62,7 +62,7 @@ fn financial_preflight_failure_is_redacted_and_visible_with_logs_off() {
     assert_eq!(output.status.code(), Some(2), "{text}");
     assert!(text.contains("not-emitted"), "{text}");
     assert!(!text.contains(secret), "{text}");
-    assert!(!temp.0.join("data/financial-unresolved.json").exists());
+    assert!(!temp.0.join("data/replay-unresolved.json").exists());
 }
 
 fn cli(temp: &Temp, args: &[&str]) -> std::process::Output {
@@ -81,18 +81,19 @@ fn text(output: &std::process::Output) -> String {
     )
 }
 #[test]
+#[cfg(unix)]
 fn explicit_review_requires_matching_attempt_and_decision_without_bank_work() {
     let temp = Temp::new();
     fs::create_dir(temp.0.join("data")).unwrap();
-    let journal = temp.0.join("data/financial-unresolved.json");
+    let journal = temp.0.join("data/replay-unresolved.json");
     fs::write(
         &journal,
-        r#"{"version":1,"attempt":"1234-abcd","operation":"order"}"#,
+        r#"{"version":1,"attempt":"0123456789abcdef0123456789abcdef","operation":"order"}"#,
     )
     .unwrap();
     let output = cli(&temp, &["financial-review"]);
     assert!(output.status.success(), "{}", text(&output));
-    assert!(text(&output).contains("unresolved attempt=1234-abcd"));
+    assert!(text(&output).contains("unresolved attempt=0123456789abcdef0123456789abcdef"));
     for args in [
         vec![
             "financial-review",
@@ -101,11 +102,15 @@ fn explicit_review_requires_matching_attempt_and_decision_without_bank_work() {
             "--decision",
             "not-applied",
         ],
-        vec!["financial-review", "--attempt", "1234-abcd"],
         vec![
             "financial-review",
             "--attempt",
-            "1234-abcd",
+            "0123456789abcdef0123456789abcdef",
+        ],
+        vec![
+            "financial-review",
+            "--attempt",
+            "0123456789abcdef0123456789abcdef",
             "--decision",
             "SECRET-unknown",
         ],
@@ -118,7 +123,7 @@ fn explicit_review_requires_matching_attempt_and_decision_without_bank_work() {
     for decision in ["not-applied", "operator-reviewed"] {
         fs::write(
             &journal,
-            r#"{"version":1,"attempt":"1234-abcd","operation":"order"}"#,
+            r#"{"version":1,"attempt":"0123456789abcdef0123456789abcdef","operation":"order"}"#,
         )
         .unwrap();
         let output = cli(
@@ -126,7 +131,7 @@ fn explicit_review_requires_matching_attempt_and_decision_without_bank_work() {
             &[
                 "financial-review",
                 "--attempt",
-                "1234-abcd",
+                "0123456789abcdef0123456789abcdef",
                 "--decision",
                 decision,
             ],
@@ -141,7 +146,7 @@ fn explicit_review_requires_matching_attempt_and_decision_without_bank_work() {
 fn corrupt_journal_cannot_disclose_arbitrary_content_or_be_automatically_cleared() {
     let temp = Temp::new();
     fs::create_dir(temp.0.join("data")).unwrap();
-    let journal = temp.0.join("data/financial-unresolved.json");
+    let journal = temp.0.join("data/replay-unresolved.json");
     let secret = "SECRET-url-bank-account";
     fs::write(
         &journal,
@@ -176,6 +181,7 @@ fn financial_parser_errors_do_not_echo_values_even_with_trace_enabled() {
 }
 
 #[test]
+#[cfg(unix)]
 fn fake_results_are_visible_with_logging_off_and_remain_blocked() {
     for outcome in ["response", "error", "cancel"] {
         let temp = Temp::new();
@@ -207,7 +213,7 @@ fn fake_results_are_visible_with_logging_off_and_remain_blocked() {
             }));
         }
         assert!(!text(&output).contains("SECRET"));
-        let journal = temp.0.join("data/financial-unresolved.json");
+        let journal = temp.0.join("data/replay-unresolved.json");
         assert!(journal.exists());
         // Real CLI sees the fake API's journal and refuses before authentication.
         let credentials = temp.0.join("credentials.json");
@@ -234,10 +240,15 @@ fn fake_results_are_visible_with_logging_off_and_remain_blocked() {
 
 #[test]
 #[ignore = "only spawned by fake_results_are_visible_with_logging_off_and_remain_blocked"]
+#[cfg(unix)]
 fn fake_financial_child() {
-    use bourso_cli::financial_guard::{Operation, Session};
+    use bourso_api::{replay_guard::ReplayGuard, OutcomeOperation as Operation};
+    use bourso_cli::financial_guard::Report;
     let outcome = std::env::var("BOURSO_FAKE_OUTCOME").unwrap();
-    let session = Session::open().unwrap();
+    let mut session = ReplayGuard::open(std::path::PathBuf::from(
+        std::env::var_os("BOURSO_DATA_DIR").unwrap(),
+    ))
+    .unwrap();
     let report = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(session.invoke(Operation::Transfer, || async {
@@ -248,6 +259,10 @@ fn fake_financial_child() {
                 _ => panic!("invalid fixture"),
             }
         }));
+    let report = Report::from_result(
+        report,
+        session.unresolved().unwrap().as_ref().map(|a| a.id()),
+    );
     report.print();
     std::process::exit(report.exit_code().into());
 }
@@ -283,4 +298,52 @@ fn fixed_clock_directories_are_unique_across_repeated_and_concurrent_calls() {
             index.to_string()
         );
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn unexpected_legacy_journal_blocks_review_and_submission_without_deletion() {
+    let temp = Temp::new();
+    fs::create_dir(temp.0.join("data")).unwrap();
+    let journal = temp.0.join("data/financial-unresolved.json");
+    fs::write(&journal, b"SECRET legacy journal").unwrap();
+    for args in [
+        vec!["financial-review"],
+        vec![
+            "financial-review",
+            "--attempt",
+            "0123456789abcdef0123456789abcdef",
+            "--decision",
+            "not-applied",
+        ],
+    ] {
+        let output = cli(&temp, &args);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(text(&output).contains("Unexpected legacy financial journal"));
+        assert!(!text(&output).contains("SECRET"));
+        assert_eq!(fs::read(&journal).unwrap(), b"SECRET legacy journal");
+        assert!(!temp.0.join("data/replay-unresolved.json").exists());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn cli_and_api_contend_on_the_same_stable_lock_before_authentication() {
+    let temp = Temp::new();
+    let session = bourso_api::FinancialSession::open(temp.0.join("data")).unwrap();
+    let output = cli(&temp, &["financial-review"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!temp.0.join("data/financial.lock").exists());
+    drop(session);
+    assert!(cli(&temp, &["financial-review"]).status.success());
+}
+
+#[test]
+#[cfg(not(unix))]
+fn unsupported_financial_review_refuses_without_creating_storage() {
+    let temp = Temp::new();
+    let output = cli(&temp, &["financial-review"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output).contains("not-emitted"));
+    assert!(!temp.0.join("data").exists());
 }

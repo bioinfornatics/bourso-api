@@ -3,13 +3,11 @@ use bourso_api::{
     account::{Account, AccountKind, Transaction},
     client::{
         trade::{order::OrderSide, tick::GetTicksEOD},
-        transfer::TransferProgress,
         BoursoWebClient,
     },
     get_client,
 };
 use clap::ArgMatches;
-use futures_util::{pin_mut, StreamExt};
 use tracing::{debug, info, warn};
 
 pub mod account_filters;
@@ -166,7 +164,7 @@ where
         "Missing customer id. Please configure it with `bourso config --username <customer_id>`",
     )?;
 
-    let session = if financial {
+    let mut session = if financial {
         Some(financial_guard::Session::open()?)
     } else {
         None
@@ -320,20 +318,9 @@ where
                                 .unwrap();
 
                             let report = session
-                                .as_ref()
+                                .as_mut()
                                 .context("Missing financial guard")?
-                                .invoke(financial_guard::Operation::Order, || async {
-                                    web_client
-                                        .order_detailed(
-                                            side.to_owned(),
-                                            account,
-                                            symbol,
-                                            *quantity,
-                                            None,
-                                        )
-                                        .await?;
-                                    Ok(())
-                                })
+                                .order(&web_client, side.to_owned(), account, symbol, *quantity)
                                 .await;
                             return Err(report.into());
                         }
@@ -373,24 +360,15 @@ where
                 .context("To account not found. Are you sure you have access to it? Run `bourso accounts` to list your accounts")?;
 
             let report = session
-                .as_ref()
+                .as_mut()
                 .context("Missing financial guard")?
-                .invoke(financial_guard::Operation::Transfer, || async {
-                    let stream = web_client.transfer_money(
-                        amount,
-                        from_account.clone(),
-                        to_account.clone(),
-                        reason.map(str::to_owned),
-                    );
-                    pin_mut!(stream);
-                    let mut terminal_response = false;
-                    while let Some(progress) = stream.next().await {
-                        terminal_response =
-                            matches!(progress?, TransferProgress::SubmittedUnverified);
-                    }
-                    anyhow::ensure!(terminal_response, "No terminal transfer response");
-                    Ok(())
-                })
+                .transfer_money(
+                    &web_client,
+                    amount,
+                    from_account.clone(),
+                    to_account.clone(),
+                    reason.map(str::to_owned),
+                )
                 .await;
             return Err(report.into());
         }

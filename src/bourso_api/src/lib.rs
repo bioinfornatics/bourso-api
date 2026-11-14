@@ -13,3 +13,6 @@ pub mod outcome;
 pub use outcome::{OutcomeOperation, OutcomeStage, OutcomeUnknown};
 
 pub mod replay_guard;
+
+pub mod financial_session;
+pub use financial_session::FinancialSession;

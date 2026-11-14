@@ -8,18 +8,17 @@ only their exercised scenarios, not live bank compatibility or absence of loss.
 
 ## Financial confirmation remains unsafe
 
-- **Orders:** explicit side/nonzero quantity and calendar-valid expiration are guarded locally. Preparation/check messages require review, and check echoes must match side, quantity, limit, type, expiration and any supplied resource ID before confirmation. The detailed API returns `SubmittedUnverified` and explicitly accessible provider state, not a trusted execution outcome. The legacy tuple remains available. An order ID is not execution proof.
+- **Orders:** explicit side/nonzero quantity and calendar-valid expiration are guarded locally. Preparation/check messages require review, and check echoes must match side, quantity, limit, type, expiration and any supplied resource ID before confirmation. The detailed API returns `SubmittedUnverified` and explicitly accessible provider state, not a trusted execution outcome. Only the mandatory session exposes submission; no public legacy tuple/raw path remains. An order ID is not execution proof.
 - **Prices and semantics:** order amount versus unit-price/total semantics and
   provider validity rules need evidence. Existing `f64` order fields are not an
   exact-money guarantee. Local date validation establishes a `YYYY-MM-DD`
   calendar date, not market timezone/current-date/maximum-validity policy.
-- **Transfers:** final HTTP 200 now produces `SubmittedUnverified`; the word `Confirmation` no longer establishes success. The existing submission stages remain available. Intermediate transition meanings, trusted receipt and positive provider execution semantics still need evidence.
-- **Unknown outcomes:** public typed `OutcomeUnknown` covers final submission send/read/status failures and order parse failures, with redacted diagnostics and a sensitive correlation-reference accessor. This error type is not durable journaling or a complete reconciliation API. Raw library re-invocation and dropped library futures remain unguarded. An additive opt-in [library replay barrier](LIBRARY_REPLAY_GUARD.md) now reserves before invocation with an explicitly supplied local Unix directory, retaining the journal after every outcome/drop/crash. Only cooperating callers using the same domain are protected; no power-loss, provider idempotency or global recovery guarantee is made.
+- **Transfers:** final HTTP 200 now produces `SubmittedUnverified`; the word `Confirmation` no longer establishes success. The session consumes all internal submission stages. Intermediate transition meanings, trusted receipt and positive provider execution semantics still need evidence.
+- **Unknown outcomes:** public typed `OutcomeUnknown` covers final submission send/read/status failures and order parse failures, with redacted diagnostics and a sensitive correlation-reference accessor. This error type is not durable journaling or a complete reconciliation API. The mandatory [financial session](LIBRARY_REPLAY_GUARD.md) reserves before the entire chain in an explicitly supplied local Unix directory, retaining the journal after every outcome/drop/crash. API and CLI share `.42` files when configured with the same directory; DCA remains separate. Changing domains, machines or deleting storage is outside the local guarantee. No power-loss, provider idempotency or global recovery guarantee is made.
   The CLI now has a conservative private replay barrier before financial API
   invocation, with explicit results and operator review; it deliberately retains
   possibly-not-emitted attempts. See [FINANCIAL_GUARD.md](FINANCIAL_GUARD.md). Do not replay before independently checking the bank.
-- **Cancellation:** a library method exists but its provider contract is not
-  established, and the CLI does not expose a cancellation command.
+- **Cancellation:** no public library method or CLI command is available; the provider contract is not established.
 
 The blocking evidence work is `bourso-y3u.4` (provider financial contracts).
 Unknown-outcome handling is `bourso-y3u.8`. Fixes must be grounded in reviewed,
